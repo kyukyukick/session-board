@@ -307,7 +307,7 @@ body.phone .msgwin { bottom: 8px; }
 .ph-head .tag { margin: 0; flex: none; }
 .ph-room { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ph-head label { flex: none; display: flex; align-items: center; gap: 6px; color: var(--muted); }
-.ph-head select { max-width: 40vw; font-size: 16px; color: var(--text); }
+.ph-head select { max-width: 30vw; font-size: 16px; color: var(--text); }
 .ph-body { flex: 1; min-height: 0; overflow-y: auto; background: var(--surface); display: flex; flex-direction: column; }
 .ph-body > .pinit, .ph-body > .pmemo, .ph-body > .empty, .ph-sub { padding: 10px 12px; }
 .ph-sub { color: var(--muted); padding-bottom: 0; }
@@ -316,7 +316,7 @@ body.phone .msgwin { bottom: 8px; }
 .ph-body .pinit .s { font-size: 13px; }
 .ph-body .chat-log { font-size: 15px; }
 .ph-tabs { flex: none; background: var(--surface); border-top: 1px solid var(--line); border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); }
-.ph-tabs button { padding: 12px 2px; border-bottom: 0; border-top: 2px solid transparent; position: relative; }
+.ph-tabs button { white-space: nowrap; font-size: 13px; padding: 12px 0; border-bottom: 0; border-top: 2px solid transparent; position: relative; }
 .ph-tabs button.on { border-top-color: var(--accent); }
 .ph-tabs .dot { position: absolute; top: 8px; right: calc(50% - 26px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
 
@@ -327,3 +327,91 @@ body.phone .msgwin { bottom: 8px; }
 }
 .pp-head { flex: none; display: flex; align-items: center; padding: 6px 8px 6px 12px; cursor: move; user-select: none; touch-action: none; }
 .phone-preview iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
+
+/* ---------- 探索者シート（探索者メーカーの「⑥ 完成」と同じ見た目） ---------- */
+dialog.wide { width: min(980px, 96vw); }
+.sheet-toggle { margin-bottom: 14px; }
+.sheet { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: clamp(18px, 4vw, 36px); font-size: 14px; }
+.sheet h2 { font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: 6px; margin: 26px 0 12px; }
+.sh-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; border-bottom: 2px solid var(--text); padding-bottom: 12px; margin-bottom: 14px; }
+.sh-title .kana { font-size: 12px; color: var(--muted); }
+.sh-title .name { font-size: 28px; font-weight: 700; line-height: 1.3; }
+.sh-title .occ { font-size: 15px; color: var(--accent); font-weight: 700; }
+.sh-title .era { font-size: 12px; color: var(--muted); text-align: right; }
+.sh-profile { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 16px; }
+.sh-profile div { border-bottom: 1px solid var(--line); padding: 3px 0; }
+.sh-profile span { font-size: 11px; color: var(--muted); margin-right: 8px; }
+.sh-stats { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.sh-stat { background: var(--surface2); border-radius: 6px; text-align: center; padding: 6px 2px; }
+.sh-stat span { display: block; font-size: 11px; font-weight: 700; color: var(--muted); }
+.sh-stat b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.sh-derived { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; margin-top: 6px; }
+.sh-derived div { border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; display: flex; justify-content: space-between; align-items: baseline; }
+.sh-derived span { font-size: 11px; color: var(--muted); }
+.sh-derived b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.sh-skills { columns: 3 220px; column-gap: 24px; }
+.sh-group { font-size: 12px; font-weight: 700; color: var(--accent); margin: 16px 0 4px; }
+.sh-group:first-of-type { margin-top: 0; }
+.sh-skill { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 3px 0; break-inside: avoid; }
+.sh-skill.occ .n::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: middle; }
+.sh-skill .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+.sh-skill .b { font-size: 11px; color: var(--faint); margin-right: 6px; font-weight: 400; }
+.sh-legend { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.sh-bg { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px 20px; }
+.sh-bg div h4 { font-size: 12px; color: var(--muted); margin: 0 0 2px; border: 0; padding: 0; }
+.sh-bg div p { margin: 0; white-space: pre-wrap; }
+.sh-occdesc { font-size: 13px; color: var(--muted); margin: 0; }
+@media (max-width: 640px) { .sh-stats { grid-template-columns: repeat(4, 1fr); } }
+.ph-body > .sheet { border: 0; border-radius: 0; }
+
+/* スマホからの雑談の書き込み欄 */
+.ph-form { flex: none; display: flex; gap: 8px; padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--line); }
+.ph-form textarea { flex: 1; resize: none; font-size: 16px; }
+
+/* メッセージウィンドウを閉じたあとの「開き直す」ボタン */
+.mw-open { position: absolute; left: 50%; transform: translateX(-50%); bottom: 48px; z-index: 6; opacity: .85; }
+body.player .mw-open { bottom: 16px; }
+body.phone .mw-open { bottom: 10px; font-size: 13px; padding: 6px 12px; }
+
+/* スマホのダイス */
+.ph-head .btn { flex: none; padding: 5px 10px; }
+.ph-dice { width: min(420px, 94vw); }
+.ph-dice input { font-size: 16px; }
+.ph-dice #phExpr { flex: 1; }
+.ph-dice-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.ph-dice-btns .btn { padding: 12px 0; font-size: 15px; font-weight: 700; }
+[data-roll] { cursor: pointer; }
+.sh-skill[data-roll]:active, .sh-derived [data-roll]:active { background: var(--accent-soft); }
+
+/* スマホのメモ：上半分が公開メモ、下半分が自分用 */
+.ph-memo { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.ph-memo section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
+/* 公開メモは書かれている分だけの高さ（最大で画面の3割ほど）にして、残りを自分メモに回す */
+.ph-memo section:first-child { flex: 0 1 auto; max-height: 32%; }
+.ph-memo section + section { border-top: 2px solid var(--line2); }
+.ph-memo h5 { margin: 0 0 6px; font-size: 13px; color: var(--muted); flex: none; }
+.ph-memo .pmemo { flex: 1; min-height: 0; overflow-y: auto; }
+.ph-memo .pmemo .empty { display: block; }
+.ph-memo textarea { flex: 1; min-height: 0; resize: none; font-size: 16px; line-height: 1.6; }
+
+/* スマホ：自分の手番のお知らせ。見出しそのものの色を変えるので、画面の配置は動かない */
+.ph-head.myturn { background: var(--accent); border-bottom-color: var(--accent); }
+.ph-head.myturn .ph-room { color: var(--accent-text); font-size: 16px; }
+.ph-head.myturn #phStatus { display: none; }
+.ph-head.myturn label { display: none; } /* 手番の間は名前の選択をしまって、お知らせの文字を広く見せる */
+.ph-head.myturn .btn { background: var(--accent-text); border-color: var(--accent-text); color: var(--accent); }
+.ph-head.flash { animation: turnFlash .45s ease-in-out 4; }
+@keyframes turnFlash { 50% { background: #fff; } }
+@media (prefers-reduced-motion: reduce) { .ph-head.flash { animation: none; } }
+
+/* 自分メモのページ（表計算のシート見出しのように横に並ぶ） */
+.ph-pages { flex: none; display: flex; gap: 4px; overflow-x: auto; margin-bottom: 6px; scrollbar-width: none; }
+.ph-pages button { flex: none; background: var(--surface2); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 6px 6px 0 0; padding: 6px 12px; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.ph-pages button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.ph-memo-acts { flex: none; margin-top: 6px; }
+.ph-memo-acts .btn { padding: 5px 10px; font-size: 13px; }
+.ph-memo-acts .btn:disabled { opacity: .4; }
+
+/* スマホのチャット内タブ（メイン・情報・雑談・秘話）の未読の印 */
+.ph-chat-tabs button { position: relative; }
+.ph-chat-tabs .dot { position: absolute; top: 6px; right: calc(50% - 24px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }

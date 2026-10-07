@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>セッションボード</title>
-<link rel="stylesheet" href="style.css?v=25">
+<link rel="stylesheet" href="style.css?v=36">
 </head>
 <body>
 <div class="app">
@@ -48,6 +48,7 @@
         <div class="mw-body"><div class="mw-name"></div><div class="mw-text"></div></div>
         <button class="mw-x" title="閉じる（次の発言でまた表示されます）" aria-label="メッセージウィンドウを閉じる">×</button>
       </div>
+      <button class="btn sm mw-open" id="mwOpen" hidden>メッセージを表示</button>
       <!-- プレイヤー画面用のオーバーレイ -->
       <div class="pov p-left" id="pLeft"></div>
       <div class="pov p-chat" id="pChat"></div>
@@ -95,9 +96,32 @@
   <span class="tag secret" id="phStatus">接続中…</span>
   <b class="ph-room" id="phRoom"></b>
   <label>あなた <select id="phName" aria-label="自分のコマ"></select></label>
+  <button class="btn primary" id="phDiceBtn" type="button" hidden>ダイス</button>
 </header>
 <div class="ph-body" id="phBody" hidden></div>
+<div class="ph-memo" id="phMemo" hidden>
+  <section><h5>公開メモ<span class="sub">GMが書いた、全員に見えるメモ</span></h5><div class="pmemo" id="phMemoPub"></div></section>
+  <section>
+    <h5>自分メモ<span class="sub">このスマホにだけ保存されます</span></h5>
+    <nav class="ph-pages" id="phMemoPages" aria-label="自分メモのページ"></nav>
+    <textarea id="phMemoMine" placeholder="自由に書き込めます" aria-label="自分メモ"></textarea>
+    <div class="row ph-memo-acts"><span class="hint">ページ名はもう一度押すと変更</span><span class="spacer"></span><button class="btn sm" type="button" id="phMemoClear">クリア</button><button class="btn sm danger" type="button" id="phMemoDel">ページを削除</button></div>
+  </section>
+</div>
+<form class="ph-form" id="phForm" hidden>
+  <textarea id="phText" rows="1" maxlength="500" placeholder="雑談に書き込む" aria-label="雑談に書き込む"></textarea>
+  <button class="btn primary" type="submit">送信</button>
+</form>
 <nav class="tabs ph-tabs" id="phTabs" hidden></nav>
+<dialog class="ph-dice" id="phDice">
+  <div class="dlg-head">ダイスを振る<span class="spacer"></span><button class="btn sm" type="button" data-pclose>×</button></div>
+  <div class="dlg-body">
+    <div class="hint">振った結果は全員に見えます（メインのチャットに出ます）。</div>
+    <label class="field"><span>目標値</span><input type="number" id="phTarget" min="1" max="100" placeholder="なし" inputmode="numeric"><span class="hint">入れると 1D100 が成功判定になります</span></label>
+    <div class="ph-dice-btns" id="phDiceBtns"></div>
+    <form class="row" id="phDiceForm"><input id="phExpr" placeholder="例: CCB<=65 ／ 2d6+3" aria-label="ダイス式" autocapitalize="off" autocomplete="off"><button class="btn primary" type="submit">振る</button></form>
+  </div>
+</dialog>
 
 <!-- GM画面に出す、スマホ画面のプレビュー -->
 <div class="phone-preview" id="phonePreview" hidden>
@@ -110,8 +134,10 @@
 <div id="toast"></div>
 <input type="file" id="fileImg" accept="image/*" multiple hidden>
 <input type="file" id="fileAudio" accept="audio/*" multiple hidden>
+<input type="file" id="fileSheet" accept=".json,application/json" hidden>
 <input type="file" id="fileImport" accept=".json,application/json" hidden>
 
-<script src="app.js?v=36"></script>
+<script src="maker-data.js?v=1"></script>
+<script src="app.js?v=48"></script>
 </body>
 </html>
