@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 50; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 51; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -304,7 +304,9 @@ function onPhoneData(conn, d) {
     if (!text || now - (info.last || 0) < 700 || (secret && !info.name)) return;
     info.last = now;
     pushMsg(secret ? 'secret' : 'chat', info.name || 'プレイヤー', text, secret ? { to: 'GM' } : {});
-    if (secret && ui.tab !== 'secret') toast(`${info.name} から秘話が届きました`);
+    // 見ていないタブへの書き込みは、画面下の通知でも知らせる（タブの赤い印だけだと見落としやすい）
+    const who = info.name || 'プレイヤー';
+    if (document.hidden || ui.tab !== (secret ? 'secret' : 'chat')) notify(secret ? `${who} から秘話が届きました` : `${who} が雑談に書き込みました`);
     commit();
   }
 }
@@ -1384,13 +1386,22 @@ function renderPicker() {
 }
 
 let toastTimer = 0;
-function toast(msg) {
+function toast(msg, ms = 2400) {
   const t = $('#toast');
   t.textContent = msg;
+  // popover として出すと、設定などのダイアログを開いている最中でもその手前に表示される
+  if (t.showPopover) { try { t.hidePopover(); } catch { /* まだ出ていない */ } try { t.showPopover(); } catch { /* 非対応なら通常表示 */ } }
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
+  toastTimer = setTimeout(() => { t.classList.remove('show'); if (t.hidePopover) { try { t.hidePopover(); } catch { /* 同上 */ } } }, ms);
 }
+// スマホからの書き込みの通知。GM画面が裏に回っている間に届いた分は、画面に戻ったときに出し直す
+let missed = '';
+function notify(msg) {
+  toast(msg, 5000);
+  if (document.hidden) missed = msg;
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { toast(missed, 5000); missed = ''; } });
 
 /* ---------- BGM ---------- */
 const audio = new Audio();

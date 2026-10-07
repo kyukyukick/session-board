@@ -419,3 +419,7 @@ body.phone .mw-open { bottom: 10px; font-size: 13px; padding: 6px 12px; }
 /* GM画面のチャットタブの未読の印 */
 #chatTabs button { position: relative; }
 #chatTabs .dot { position: absolute; top: 6px; right: calc(50% - 22px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+
+/* 通知は popover（最前面）として出す。ブラウザ標準の popover の見た目を打ち消す */
+#toast[popover] { inset: auto auto 24px 50%; margin: 0; border: 0; overflow: visible; }
+#toast[popover]:not(:popover-open) { display: none; }
