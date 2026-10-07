@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>セッションボード</title>
+<link rel="stylesheet" href="style.css?v=25">
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <strong class="logo">セッションボード</strong>
+    <input class="room" data-bind="room" id="roomName" placeholder="ルーム名" aria-label="ルーム名">
+    <span class="spacer"></span>
+    <span class="save-status" id="saveStatus"></span>
+    <button class="btn" data-act="exportRoom" title="ルーム全体（画像・音源込み）をファイルに保存します">書き出し</button>
+    <button class="btn" data-act="importRoom" title="書き出したファイルからルームを復元します">読み込み</button>
+    <button class="btn danger" data-act="resetRoom">リセット</button>
+    <button class="btn" data-act="phoneDlg" id="phoneBtn" title="プレイヤーが自分のスマホでマップやステータス、秘話を見られるようにします">スマホ</button>
+    <button class="btn primary" data-act="openPlayer" title="プレイヤーに見せる画面を別ウィンドウで開きます。外部モニターへ移動して全画面にしてください">プレイヤー画面を開く</button>
+  </header>
+
+  <div class="main">
+    <aside class="panel left">
+      <nav class="tabs" id="leftTabs"></nav>
+      <div class="panel-body" id="leftBody"></div>
+    </aside>
+
+    <section class="board" id="board">
+      <div class="bg" id="bgLayer"></div>
+      <div class="stage" id="stage">
+        <div class="fg" id="fgLayer"></div>
+        <div class="layer" id="markerLayer"></div>
+        <div class="layer" id="pieceLayer"></div>
+      </div>
+      <div class="gm-hint">コマ：ドラッグで移動・ダブルクリックで編集／マップ：ドラッグで移動・ホイールで拡大縮小／画像・音源はここにドロップ</div>
+      <div class="zoombar">
+        <button class="btn sm" data-act="zoomStep" data-d="-1" title="縮小">−</button>
+        <label title="盤面の表示倍率。プレイヤー画面にも反映されます"><input type="number" id="zoomPct" min="25" max="400" step="5" aria-label="表示倍率">%</label>
+        <button class="btn sm" data-act="zoomStep" data-d="1" title="拡大">＋</button>
+        <button class="btn sm" data-act="zoomReset" title="倍率と位置を初期状態（全体表示）に戻します">表示を戻す</button>
+        <button class="btn sm" data-act="resetPieces" title="盤面のコマをすべてマップの左上から順に並べ直します">コマを戻す</button>
+      </div>
+      <div class="dicefx" id="diceFx"></div>
+      <div class="msgwin" id="msgWin" hidden>
+        <div class="mw-rz" title="ドラッグでウィンドウの大きさを変更／ダブルクリックで元の大きさ"></div>
+        <div class="mw-img"></div>
+        <div class="mw-body"><div class="mw-name"></div><div class="mw-text"></div></div>
+        <button class="mw-x" title="閉じる（次の発言でまた表示されます）" aria-label="メッセージウィンドウを閉じる">×</button>
+      </div>
+      <!-- プレイヤー画面用のオーバーレイ -->
+      <div class="pov p-left" id="pLeft"></div>
+      <div class="pov p-chat" id="pChat"></div>
+      <div class="pov p-hint" id="pHint"></div>
+    </section>
+
+    <aside class="panel right">
+      <nav class="tabs" id="chatTabs"></nav>
+      <div class="chat-log" id="chatLog"></div>
+      <div class="memo-pane" id="memoPane" hidden>
+        <label>公開メモ<span class="sub">「盤面」タブで表示をオンにするとプレイヤー画面に出ます</span>
+          <textarea data-bind="memo.pub" id="memoPub"></textarea></label>
+        <label>GMメモ<span class="tag secret">秘匿</span><span class="sub">GM画面にしか表示されません</span>
+          <textarea data-bind="memo.gm" id="memoGm"></textarea></label>
+      </div>
+      <form class="chat-form" id="chatForm">
+        <div class="row">
+          <select id="chatFrom" aria-label="発言者"></select>
+          <span id="chatToWrap" hidden>→ <select id="chatTo" aria-label="宛先"></select></span>
+        </div>
+        <div class="row">
+          <textarea id="chatText" rows="2" placeholder="メッセージ（Enterで送信／Shift+Enterで改行）&#10;1d100<=65 のように書くとダイスを振ります"></textarea>
+          <button class="btn primary" type="submit">送信</button>
+        </div>
+      </form>
+      <div class="dice">
+        <div class="dice-head">
+          <b>ダイス</b><span class="tag on" id="diceEngine" title="BCDice（クトゥルフ神話TRPG）で振ります。つながらないときは内蔵のダイスに切り替わります">BCDice</span>
+          <select id="diceWho" aria-label="ダイスを振る人" title="ダイスを振る人"></select>
+          <label>目標値 <input type="number" id="diceTarget" min="1" max="100" placeholder="なし" title="入れると 1D100 ボタンが「1D100<=目標値」の判定になります"></label>
+        </div>
+        <div class="dice-btns" id="diceBtns"></div>
+        <form class="row" id="diceForm">
+          <input id="diceExpr" placeholder="例: CCB<=65 ／ 2d6+3 ／ RESB(12-10)" aria-label="ダイス式">
+          <button class="btn" type="submit">振る</button>
+        </form>
+        <div class="dice-log" id="diceLog"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- スマホ画面用（スマホで開いたときだけ使う） -->
+<header class="ph-head" id="phHead" hidden>
+  <span class="tag secret" id="phStatus">接続中…</span>
+  <b class="ph-room" id="phRoom"></b>
+  <label>あなた <select id="phName" aria-label="自分のコマ"></select></label>
+</header>
+<div class="ph-body" id="phBody" hidden></div>
+<nav class="tabs ph-tabs" id="phTabs" hidden></nav>
+
+<!-- GM画面に出す、スマホ画面のプレビュー -->
+<div class="phone-preview" id="phonePreview" hidden>
+  <div class="pp-head" id="ppHead" title="ここをドラッグして動かせます"><b>スマホ画面のプレビュー</b><span class="spacer"></span><button class="btn sm" data-act="closePhonePreview">×</button></div>
+  <iframe title="スマホ画面のプレビュー"></iframe>
+</div>
+
+<dialog id="dlg"></dialog>
+<dialog id="picker"></dialog>
+<div id="toast"></div>
+<input type="file" id="fileImg" accept="image/*" multiple hidden>
+<input type="file" id="fileAudio" accept="audio/*" multiple hidden>
+<input type="file" id="fileImport" accept=".json,application/json" hidden>
+
+<script src="app.js?v=36"></script>
+</body>
+</html>
