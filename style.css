@@ -415,3 +415,7 @@ body.phone .mw-open { bottom: 10px; font-size: 13px; padding: 6px 12px; }
 /* スマホのチャット内タブ（メイン・情報・雑談・秘話）の未読の印 */
 .ph-chat-tabs button { position: relative; }
 .ph-chat-tabs .dot { position: absolute; top: 6px; right: calc(50% - 24px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+
+/* GM画面のチャットタブの未読の印 */
+#chatTabs button { position: relative; }
+#chatTabs .dot { position: absolute; top: 6px; right: calc(50% - 22px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }

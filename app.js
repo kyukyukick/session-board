@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 47; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 50; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -529,9 +529,10 @@ function renderMsgWin() {
   // 幅は使える横幅に対する割合、高さは文章の行数で持つ（GM画面とプレイヤー画面で文字の大きさが違うため）
   const w = num(state.view.mwW, 0) ? clamp(num(state.view.mwW), 0.2, 1) * lay.aw : lay.aw * 0.9;
   // 文字も画像も使える横幅に比例させ、GM画面とプレイヤー画面で同じ見え方（同じ位置で改行）にする
-  // 100% = プレイヤー画面で 24px。GM画面はプレイヤー画面との横幅の比で縮めて、同じ見え方にする
-  // 基準はプレイヤー画面で行動順とチャットを両方出したときの横幅。表示のオンオフでGM画面の文字が変わらないよう固定する
-  const ratio = IS_PHONE ? clamp(lay.aw / 640, 0.55, 1) : IS_PLAYER ? 1 : lay.aw / Math.max(300, (playerBw || 1920) - 638);
+  // 100% = フルHD（横1920）のプレイヤー画面で 24px。どの画面も横幅に比例させるので、プレイヤー画面のウィンドウの大きさを変えても
+  // GM画面の文字は変わらず、プレイヤー画面はウィンドウに合わせて全体が同じ見え方のまま縮む
+  // GM画面の基準 1282 = フルHDのプレイヤー画面で行動順とチャットを両方出したときに盤面へ使える横幅
+  const ratio = IS_PHONE ? clamp(lay.aw / 640, 0.55, 1) : IS_PLAYER ? clamp((lay.bw - 638) / 1282, 0.4, 2.5) : lay.aw / 1282;
   el.style.fontSize = Math.max(8, MW_FONT * ratio * clamp(num(state.view.mwFont, 1), 0.5, 2)) + 'px';
   el.style.left = lay.l + (lay.aw - w) / 2 + 'px';
   el.style.width = w + 'px';
@@ -871,7 +872,15 @@ function pushMsg(tab, from, text, extra = {}) {
 const sysMsg = (text, gm = false) => pushMsg('info', 'システム', text, { sys: true, gm });
 
 function renderChat() {
-  $('#chatTabs').innerHTML = [...CHAT_TABS, ['memo', 'メモ']].map(([k, t]) => `<button class="${ui.tab === k ? 'on' : ''}" data-act="ctab" data-tab="${k}">${t}</button>`).join('');
+  // 雑談と秘話は、見ていない間に新しい発言が入ったらタブに赤い印を付ける（スマホからの書き込みに気づけるように）
+  if (!ui.seen) ui.seen = Object.fromEntries(['chat', 'secret'].map(k => [k, Math.max(0, ...state.chat.filter(m => m.tab === k).map(m => m.t))]));
+  const unread = {};
+  for (const k of ['chat', 'secret']) {
+    const latest = Math.max(0, ...state.chat.filter(m => m.tab === k).map(m => m.t));
+    if (ui.tab === k) ui.seen[k] = latest;
+    unread[k] = latest > ui.seen[k];
+  }
+  $('#chatTabs').innerHTML = [...CHAT_TABS, ['memo', 'メモ']].map(([k, t]) => `<button class="${ui.tab === k ? 'on' : ''}" data-act="ctab" data-tab="${k}">${t}${unread[k] ? '<i class="dot"></i>' : ''}</button>`).join('');
   const memo = ui.tab === 'memo', log = $('#chatLog');
   log.hidden = memo; $('#chatForm').hidden = memo; $('#memoPane').hidden = !memo;
   for (const [id, k] of [['#memoPub', 'pub'], ['#memoGm', 'gm']]) if (document.activeElement !== $(id)) $(id).value = state.memo[k];
@@ -1969,6 +1978,7 @@ function initPhone() {
     ph.tab = 'map'; renderPhone(); renderBoard();
   };
   btn.addEventListener('click', () => dlg.showModal());
+  dlg.addEventListener('close', () => { $('#phTarget').value = ''; $('#phExpr').value = ''; }); // 振ったあと・閉じたあとは入力を残さない
   dlg.addEventListener('click', e => {
     if (e.target === dlg || e.target.closest('[data-pclose]')) return dlg.close();
     const b = e.target.closest('[data-pdice]');
