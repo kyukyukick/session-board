@@ -423,3 +423,69 @@ body.phone .mw-open { bottom: 10px; font-size: 13px; padding: 6px 12px; }
 /* 通知は popover（最前面）として出す。ブラウザ標準の popover の見た目を打ち消す */
 #toast[popover] { inset: auto auto 24px 50%; margin: 0; border: 0; overflow: visible; }
 #toast[popover]:not(:popover-open) { display: none; }
+
+/* ダイスはクリックするまで出したままにする */
+.dicefx.show { pointer-events: auto; cursor: pointer; }
+.fx-hint { visibility: hidden; font-size: .8em; color: rgba(255, 255, 255, .7); background: rgba(18, 20, 24, .7); border-radius: 99px; padding: .1em .8em; }
+.dicefx.done .fx-hint { visibility: visible; }
+
+/* スマホ：自分が動かせるコマ */
+body.phone .piece.mine { cursor: grab; }
+body.phone .piece.mine .pimg { outline: 3px dashed var(--accent); outline-offset: 2px; }
+
+/* 探索者シート：成長チェック・技能値の変更・保存 */
+.sh-skill { align-items: center; gap: 6px; }
+.sh-skill .n { flex: 1; min-width: 0; }
+.sh-skill .gc { flex: none; width: 16px; height: 16px; margin: 0; }
+.sh-skill .gc-mark { flex: none; width: 1em; color: var(--accent); }
+.sh-skill .gv { width: 58px; padding: 0 4px; text-align: right; font-weight: 700; }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
+#exportDlg { width: min(420px, 94vw); }
+.export-btns { display: flex; flex-direction: column; gap: 8px; }
+.export-btns .btn { padding: 10px; text-align: center; }
+.export-btns .btn:disabled { opacity: .4; cursor: default; }
+body.phone .sh-skill .gc { width: 22px; height: 22px; }
+
+/* 印刷：シートだけを白地で出す */
+#printArea { display: none; }
+@media print {
+  html, body.print-sheet { height: auto; overflow: visible; background: #fff; }
+  body.print-sheet > *:not(#printArea) { display: none !important; }
+  body.print-sheet #printArea {
+    display: block; color: #1f2328;
+    --surface: #fff; --surface2: #eef0f3; --line: #e1e4e8; --line2: #cfd4da; --text: #1f2328; --muted: #656d76; --faint: #9aa1a9; --accent: #2a7d6b;
+  }
+  body.print-sheet .sheet { border: 0; padding: 0; }
+  body.print-sheet .sheet-toggle, body.print-sheet .sheet-actions { display: none; }
+}
+
+/* コマの編集：入力欄の下端をそろえる、色の見本 */
+.cols { align-items: end; }
+.dlg-body div.f { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* コマ一覧：名前が長くても PL／NPC の印と並べ替えボタンが隠れないようにする */
+.cname { display: flex; align-items: center; gap: 4px; overflow: visible; white-space: normal; cursor: default; }
+.cname .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.cname .tag, .ctags .tag { margin: 0; flex: none; }
+.ctags { display: flex; flex-wrap: wrap; gap: 4px; }
+.cname .mv { flex: none; display: flex; gap: 2px; }
+.cname .mv button { background: var(--surface2); border: 1px solid var(--line2); border-radius: 4px; color: var(--muted); padding: 0 5px; font-size: 12px; line-height: 1.5; cursor: pointer; }
+.cname .mv button:disabled { opacity: .3; cursor: default; }
+.turnbar .btn.sm { padding: 1px 6px; }
+
+/* GMが振ったダイスは、プレイヤー側では押しても消えない */
+.dicefx.locked { pointer-events: none; cursor: default; }
+.sheet-actions .btn:disabled { opacity: .4; cursor: default; }
+
+/* コマ一覧：追加ボタンとラウンドの行は、スクロールしても上に残す */
+.chead { position: sticky; top: -10px; z-index: 3; margin: -10px -10px 0; padding: 10px 10px 8px; background: var(--surface); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.turnbar { flex-wrap: wrap; row-gap: 6px; }
+.turnbar > span:first-child { white-space: nowrap; }
+.turnbar .brk { flex-basis: 100%; height: 0; }
+
+/* 左パネル：上の操作部分（phead）は固定し、一覧（pscroll）だけをスクロールさせる。スクロールバーも一覧の高さになる */
+#leftBody { padding: 0; gap: 0; overflow: hidden; }
+.phead { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+.pscroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+.pscroll .field { flex-wrap: wrap; } /* 幅が足りないときは切れずに折り返す */

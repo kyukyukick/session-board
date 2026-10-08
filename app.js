@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 51; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 56; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -148,21 +148,30 @@ function toGM(msg) {
 // プレイヤー画面へ渡すのは公開情報だけ
 function publicState() {
   const s = state;
+  const mask = publicMask();
+  // 名前非公開のコマは「？？？」・画像なし・グレーにする。ステータス非公開ならDEX（行動順の値）も渡さない
   const chars = s.chars.filter(c => !c.hidden).map(c => ({
-    id: c.id, name: c.name, img: c.img, init: c.init, size: c.size, x: c.x, y: c.y, onBoard: c.onBoard,
+    id: c.id, name: c.secretName ? MASK : c.name, img: c.secretName ? null : c.img, color: c.secretName ? GREY : charColor(c),
+    init: c.secretStatus ? null : c.init, size: c.size, x: c.x, y: c.y, onBoard: c.onBoard, pc: isPC(c),
     status: c.secretStatus ? null : c.status,
   }));
+  const last = s.view.msgwin ? latestMsg() : null;
   return {
     room: s.room,
     chars,
     markers: s.markers.filter(m => !m.hidden),
     fg: s.fg, bg: s.bg,
-    chat: s.view.chat ? s.chat.filter(m => m.tab !== 'secret' && !m.gm).slice(-200) : [],
+    chat: s.view.chat ? s.chat.filter(m => m.tab !== 'secret' && !m.gm).slice(-200).map(m => ({ ...m, from: mask(m.from), text: mask(m.text) })) : [],
     memo: { pub: s.view.memo ? s.memo.pub : '' },
     turn: { id: chars.some(c => c.id === s.turn.id) ? s.turn.id : null, round: s.turn.round },
     view: s.view,
-    msgwin: s.view.msgwin ? latestMsg() : null,
+    msgwin: last && { ...last, from: mask(last.from), text: mask(last.text) },
   };
+}
+// 名前を非公開にしたコマの名前を、プレイヤーに見せる文章の中で「？？？」に置き換える
+function publicMask() {
+  const names = state.chars.filter(c => c.secretName && c.name).map(c => c.name).sort((a, b) => b.length - a.length);
+  return str => names.reduce((t, n) => t.split(n).join(MASK), String(str ?? ''));
 }
 function syncPlayer() { toWindow({ type: 'state', state: publicState() }); syncPhones(); }
 
@@ -177,14 +186,27 @@ function syncPhones() {
       if (!conn.open) return;
       const whispers = info.name ? state.chat.filter(m => m.tab === 'secret' && (m.to === info.name || m.from === info.name)).slice(-100) : [];
       const me = info.name && state.chars.find(c => c.name === info.name); // 探索者シートは本人のスマホにだけ送る
-      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, sheet: (me && me.sheet) || null } }));
+      // taken = ほかのスマホが選んでいるコマ（同じ探索者を2人が選ばないようにする）
+      const taken = [...phones].filter(([c2, i2]) => c2 !== conn && c2.open && i2.name).map(([, i2]) => i2.name);
+      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, taken, sheet: (me && me.sheet) || null, sheetSrc: (me && me.sheetSrc) || null } }));
     });
   }, 200);
 }
 
 // プレイヤー側（別ウィンドウ・スマホ共通）：GM画面から届いた内容を反映する
 function onPlayerMsg(d) {
-  if (d.type === 'state') { state = d.state; renderBoard(); renderPlayer(); }
+  if (d.type === 'state') {
+    state = d.state;
+    if (IS_PHONE && ph.drag) { const c = state.chars.find(x => x.id === ph.drag.id); if (c) { c.x = ph.drag.x; c.y = ph.drag.y; } } // 自分で動かしている最中のコマは手元の位置を優先
+    renderBoard(); renderPlayer();
+  }
+  if (d.type === 'diceOff') hideDice(false);
+  if (d.type === 'name') { // GM画面が、選んだコマを受け付けなかった
+    ph.name = String(d.name || '');
+    try { localStorage.setItem('coc-sb-name-' + ROOM, ph.name); } catch { /* 保存できなくても使える */ }
+    if (d.msg) toast(String(d.msg), 4000);
+    renderPhone();
+  }
   if (d.type === 'dice' && d.anim) playDice(d.anim);
   if (d.type === 'toast') toast(String(d.text || ''));
   if (d.type === 'asset') { urls.set(d.id, URL.createObjectURL(d.blob || new Blob([d.buf], { type: d.mime }))); renderBoard(); renderPlayer(); }
@@ -212,6 +234,7 @@ window.addEventListener('message', e => {
     if (d.type === 'hello' || (d.type === 'ping' && e.source !== playerWin)) { playerWin = e.source; syncPlayer(); }
     if (e.source === playerWin && d.bw > 1 && d.bw !== playerBw) { playerBw = d.bw; renderBoard(); }
     if (d.type === 'need' && e.source === playerWin && blobs.has(d.id)) toWindow({ type: 'asset', id: d.id, blob: blobs.get(d.id) });
+    if (d.type === 'diceOff' && e.source === playerWin && !fx.lock) { hideDice(false); toPhones({ type: 'diceOff' }); }
   }
 });
 
@@ -290,7 +313,31 @@ function onPhoneData(conn, d) {
   const info = phones.get(conn);
   if (!info || !d || d.coc !== 1) return;
   if (d.ver !== APP_VER) return conn.send({ coc: 1, type: 'reload', ver: APP_VER });
-  if (d.type === 'hello') { info.name = String(d.name || '').slice(0, 80); renderPhoneStatus(); syncPhones(); }
+  if (d.type === 'hello') {
+    // 選べるのは、公開されているプレイヤーのコマで、ほかのスマホがまだ選んでいないものだけ
+    const want = String(d.name || '').slice(0, 80);
+    const ok = !want || (state.chars.some(c => c.name === want && isPC(c) && !c.hidden) && ![...phones].some(([c2, i2]) => c2 !== conn && c2.open && i2.name === want));
+    info.name = ok ? want : '';
+    if (!ok) conn.send({ coc: 1, type: 'name', name: '', msg: 'そのコマは選べません（ほかの人が選んでいるか、プレイヤー用のコマではありません）' });
+    renderPhoneStatus(); syncPhones();
+  }
+  if (d.type === 'diceOff' && !fx.lock) { hideDice(false); toPlayer({ type: 'diceOff' }); }
+  const mine = info.name && state.chars.find(c => c.name === info.name && isPC(c)); // このスマホのコマ
+  if (d.type === 'move' && mine && mine.onBoard && !mine.hidden) { // 自分のコマだけ動かせる
+    mine.x = clamp(num(d.x, mine.x), -3, num(state.fg.cols, 20) + 2);
+    mine.y = clamp(num(d.y, mine.y), -3, num(state.fg.rows, 12) + 2);
+    commit(!!d.end);
+  }
+  if (d.type === 'check' && mine && mine.sheet && mine.sheet.skills[d.i]) { // 成長チェック
+    mine.sheet.skills[d.i].c = !!d.v;
+    commit();
+    // GMがそのシートを開いて編集中なら、下書きにも入れておく（保存で上書きして消さないように）
+    if ($('#dlg').open && ui.sheetId === mine.id && ui.draft && ui.draft.skills[d.i]) {
+      ui.draft.skills[d.i].c = !!d.v;
+      const box = $(`#dlg [data-gc="${+d.i}"]`);
+      if (box) box.checked = !!d.v;
+    }
+  }
   if (d.type === 'need') sendPhoneImage(conn, d.id);
   if (d.type === 'roll') { // スマホからのダイスは全員に見える形（メインタブ）で振る
     const expr = String(d.expr || '').trim().slice(0, 100), now = Date.now();
@@ -315,7 +362,7 @@ async function phoneRoll(conn, info, expr) {
   if (!r) { if (conn.open) conn.send({ coc: 1, type: 'toast', text: 'ダイス式を読み取れませんでした（例: 2d6+3）' }); return; }
   const from = info.name || 'プレイヤー', text = `${from}：${r.text}`;
   playDice({ ...r, text });
-  toPlayer({ type: 'dice', anim: { text, cls: r.cls, rands: r.rands } });
+  toPlayer({ type: 'dice', anim: { text: publicMask()(text), cls: r.cls, rands: r.rands } });
   await new Promise(res => setTimeout(res, DICE_MS + 300)); // 転がる演出が終わってから発言にする
   pushMsg('main', from, text);
   commit();
@@ -397,7 +444,17 @@ function flush() {
 }
 
 /* ---------- 盤面 ---------- */
-const hue = id => { let h = 0; for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) % 360; return `hsl(${h} 45% 40%)`; };
+// コマごとに決まる既定の色（#rrggbb）。id から色相を決めて HSL(色相, 45%, 40%) を変換する
+const hue = id => {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  const f = n => { const k = (n + h / 30) % 12; return Math.round((0.4 - 0.18 * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255).toString(16).padStart(2, '0'); };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
+const charColor = c => c.color || hue(c.id); // 画像がないときのコマの色
+const CHAR_COLORS = ['#c93c37', '#e07b39', '#d9b23c', '#4f9d4f', '#2a9d8f', '#3a78c9', '#7b52c9', '#c9529b', '#8a5a3c', '#6d747d', '#2b2f36']; // すぐ選べる基本の色
+const isPC = c => c.kind === 'pc';           // プレイヤーのコマ（それ以外はNPC）
+const MASK = '？？？', GREY = '#6d747d';      // 名前を非公開にしたコマの、プレイヤー側での見え方
 const initial = name => esc([...(name || '?')][0] || '?');
 const order = () => state.chars.map((c, i) => [c, i]).sort((a, b) => num(b[0].init) - num(a[0].init) || a[1] - b[1]).map(x => x[0]);
 
@@ -486,8 +543,9 @@ function renderBoard() {
     el.style.left = c.x * CELL + 'px'; el.style.top = c.y * CELL + 'px'; el.style.width = size * CELL + 'px';
     el.classList.toggle('secret', !!c.hidden);
     el.classList.toggle('turn', s.turn.id === c.id);
+    el.classList.toggle('mine', IS_PHONE && !!c.pc && c.name === ph.name); // スマホで自分が動かせるコマ
     const u = assetUrl(c.img), st = statusHTML(c);
-    setHTML(el, (u ? `<img class="pimg" src="${u}" draggable="false" alt="">` : `<div class="pimg ph" style="background:${hue(c.id)}">${initial(c.name)}</div>`)
+    setHTML(el, (u ? `<img class="pimg" src="${u}" draggable="false" alt="">` : `<div class="pimg ph" style="background:${esc(IS_PLAYER ? c.color || GREY : charColor(c))}">${initial(c.name)}</div>`)
       + `<div class="plabel"><div class="pname">${esc(c.name)}</div>${st ? `<div class="pstat">${st}</div>` : ''}</div>`);
   });
 }
@@ -518,7 +576,7 @@ function latestMsg() {
     const m = state.chat[i];
     if (m.tab !== 'main' || m.gm) continue;
     const c = state.chars.find(x => x.name === m.from && !x.hidden);
-    return { id: m.id, from: m.from, text: m.text, t: m.t, img: c ? c.img : null };
+    return { id: m.id, from: m.from, text: m.text, t: m.t, img: c && !c.secretName ? c.img : null };
   }
   return null;
 }
@@ -742,7 +800,7 @@ function newChar(over = {}) {
   const n = state.chars.length, cols = Math.max(1, Math.round(num(state.fg.cols, 20)));
   return {
     id: uid(), name: `探索者${n + 1}`, img: null, init: 10, size: 1, x: n % cols, y: Math.floor(n / cols), onBoard: true,
-    hidden: false, secretStatus: false, memo: '',
+    hidden: true, secretStatus: true, secretName: false, kind: 'npc', color: '', memo: '', // 公開設定は、いったんすべて伏せた状態から始める
     status: [{ label: 'HP', value: 10, max: 10 }, { label: 'MP', value: 10, max: 10 }, { label: 'SAN', value: 50, max: 99 }],
     ...over,
   };
@@ -759,15 +817,21 @@ const LEFT = {
   chars() {
     const s = state;
     return `
+      <div class="phead">
       <div class="row"><button class="btn primary" data-act="addChar">＋ コマを追加</button>
         <button class="btn" data-act="pasteChar" title="探索者メーカーで作った探索者（JSON）や「ココフォリア駒」の出力を貼り付けて追加します">駒データを貼り付け</button></div>
       <div class="turnbar"><span>ラウンド <b>${s.turn.round}</b></span><span class="spacer"></span>
-        <button class="btn sm primary" data-act="nextTurn">次の手番 ▶</button><button class="btn sm" data-act="resetTurn">リセット</button></div>
-      <ul class="clist">${order().map(c => `
+        <button class="btn sm${ui.sortInit ? ' on' : ''}" data-act="toggleSort" title="オンにすると行動順（イニシアティブの大きい順）に並べて表示します。オフのときは ↑↓ で並び順を入れ替えられ、その順がプレイヤー側の一覧にも使われます">行動順</button>
+        <span class="brk"></span>
+        <button class="btn sm" data-act="prevTurn" title="前の手番に戻す">◀ 前の手番</button><button class="btn sm primary" data-act="nextTurn" title="次の手番へ（秘匿のコマは飛ばします）">次の手番 ▶</button><span class="spacer"></span><button class="btn sm" data-act="resetTurn">リセット</button></div>
+      </div>
+      <div class="pscroll"><ul class="clist">${(ui.sortInit ? order() : s.chars).map((c, ci, list) => `
         <li class="citem${s.turn.id === c.id ? ' turn' : ''}${c.hidden ? ' secret' : ''}">
           <span data-act="editChar" data-id="${c.id}">${thumb(c.img, c.name)}</span>
           <div class="cmain">
-            <div class="cname" data-act="editChar" data-id="${c.id}">${esc(c.name)}${c.hidden ? '<span class="tag secret">秘匿</span>' : c.secretStatus ? '<span class="tag secret">ステータス非公開</span>' : ''}</div>
+            <div class="cname"><span class="nm" data-act="editChar" data-id="${c.id}" title="${esc(c.name)}">${esc(c.name)}</span><span class="tag${isPC(c) ? ' on' : ''}">${isPC(c) ? 'PL' : 'NPC'}</span>${ui.sortInit ? '' : `<span class="mv">
+              <button data-act="moveChar" data-id="${c.id}" data-d="-1" title="上へ"${ci === 0 ? ' disabled' : ''}>↑</button><button data-act="moveChar" data-id="${c.id}" data-d="1" title="下へ"${ci === list.length - 1 ? ' disabled' : ''}>↓</button></span>`}</div>
+            ${c.hidden || c.secretName || c.secretStatus ? `<div class="ctags">${c.hidden ? '<span class="tag secret">秘匿</span>' : ''}${c.secretName ? '<span class="tag secret">名前非公開</span>' : ''}${c.secretStatus ? '<span class="tag secret">ステータス非公開</span>' : ''}</div>` : ''}
             <div class="cstats">${c.status.map((st, i) => `<label>${esc(st.label)}
               <input type="number" data-bind="chars.${c.id}.status.${i}.value" data-prev="${esc(st.value)}" value="${esc(st.value)}"></label>`).join('')}</div>
           </div>
@@ -777,13 +841,15 @@ const LEFT = {
             ${c.sheet ? `<button class="btn sm on" data-act="viewSheet" data-id="${c.id}" title="探索者シート（能力値・技能）を見る">シート</button>`
               : `<button class="btn sm" data-act="attachSheet" data-id="${c.id}" title="探索者シートは未登録です。押すと探索者メーカーのデータを取り込めます">シート＋</button>`}
           </div>
-        </li>`).join('') || '<li class="empty">コマがありません</li>'}</ul>`;
+        </li>`).join('') || '<li class="empty">コマがありません</li>'}</ul></div>`;
   },
   scenes() {
     return `
+      <div class="phead">
       <button class="btn primary wide" data-act="saveScene">＋ 現在の状態をシーンとして保存</button>
       <div class="hint">前景・背景・BGM・マーカーをまとめて保存し、ワンクリックで切り替えます。</div>
-      <ul class="slist">${state.scenes.map(sc => `
+      </div>
+      <div class="pscroll"><ul class="slist">${state.scenes.map(sc => `
         <li class="sitem${state.sceneId === sc.id ? ' on' : ''}">
           <span data-act="applyScene" data-id="${sc.id}" title="このシーンに切り替え">${thumb(sc.fg.img || sc.bg.img, sc.name, 'wide')}</span>
           <div class="col">
@@ -792,11 +858,11 @@ const LEFT = {
               <button class="btn sm" data-act="overwriteScene" data-id="${sc.id}" title="現在の盤面でこのシーンを上書きします">上書き</button>
               <button class="btn sm danger" data-act="delScene" data-id="${sc.id}">削除</button></div>
           </div>
-        </li>`).join('') || '<li class="empty">シーンがありません</li>'}</ul>`;
+        </li>`).join('') || '<li class="empty">シーンがありません</li>'}</ul></div>`;
   },
   board() {
     const s = state;
-    return `
+    return `<div class="pscroll">
       <h4>前景（マップ・格子状のパネル）</h4>
       <div class="imgrow"><span data-act="pickFg">${thumb(s.fg.img, '前', 'wide')}</span>
         <button class="btn" data-act="pickFg">画像を選ぶ</button><button class="btn" data-act="clearFg">外す</button></div>
@@ -829,33 +895,40 @@ const LEFT = {
       <div class="field"><span>文字サイズ</span><input type="range" min="0.5" max="2" step="0.05" data-bind="view.mwFont" value="${clamp(num(s.view.mwFont, 1), 0.5, 2)}"><span>${Math.round(clamp(num(s.view.mwFont, 1), 0.5, 2) * 100)}%</span>
         <button class="btn sm" data-act="set" data-path="view.mwFont" data-val="1" title="文字サイズを100%に戻す">戻す</button></div>
       <div class="field"><span>文字送り</span>${MW_SPEEDS.map(([k, t]) => `<button class="btn sm${mwSpeedOf() === k ? ' on' : ''}" data-act="set" data-path="view.mwSpeed" data-val="${k}">${t}</button>`).join('')}</div>
-      <div class="hint">大きさは、GM画面のウィンドウ左上の緑のつまみをドラッグして変えられます。</div>`;
+      <div class="hint">大きさは、GM画面のウィンドウ左上の緑のつまみをドラッグして変えられます。</div></div>`;
   },
   bgm() {
     const b = state.bgm, cur = b.playing && asset(b.id);
     return `
+      <div class="phead">
       <button class="btn primary wide" data-act="uploadAudio">＋ 音源を取り込む</button>
       <div class="turnbar">${cur ? `再生中：<b>${esc(cur.name)}</b>` : '停止中'}</div>
       <div class="field"><span>音量</span><input type="range" min="0" max="1" step="0.01" data-bind="bgm.volume" value="${esc(b.volume)}"></div>
       ${chk('bgm.loop', 'ループ再生', b.loop)}
       ${chk('view.diceSe', 'ダイスを振る音を鳴らす', state.view.diceSe !== false)}
-      <ul class="alist">${audios().map(a => {
+      </div>
+      <div class="pscroll"><ul class="alist">${audios().map(a => {
         const on = b.playing && b.id === a.id;
         return `<li class="aitem${on ? ' on' : ''}">
           <button class="btn sm${on ? ' on' : ''}" data-act="playBgm" data-id="${a.id}">${on ? '■ 停止' : '▶ 再生'}</button>
           <input type="text" data-bind="assets.${a.id}.name" value="${esc(a.name)}" aria-label="音源名">
           <button class="btn sm danger" data-act="delAsset" data-id="${a.id}">削除</button></li>`;
       }).join('') || '<li class="empty">音源がありません</li>'}</ul>
-      <div class="hint">BGMはこのGM画面のパソコンから鳴ります。再生中の曲・音量・ループはシーンに保存されます。</div>`;
+      <div class="hint">BGMはこのGM画面のパソコンから鳴ります。再生中の曲・音量・ループはシーンに保存されます。</div></div>`;
   },
 };
 
 function renderLeft() {
   $('#leftTabs').innerHTML = LEFT_TABS.map(([k, t]) => `<button class="${ui.ltab === k ? 'on' : ''}" data-act="ltab" data-tab="${k}">${t}</button>`).join('');
-  const body = $('#leftBody'), top = body.scrollTop;
+  // スクロールするのは各タブの pscroll の部分だけ。作り直してもタブごとのスクロール位置を保つ
+  const body = $('#leftBody'), old = $('.pscroll', body);
+  ui.scroll = ui.scroll || {};
+  if (old && body.dataset.tab) ui.scroll[body.dataset.tab] = old.scrollTop;
   const a = document.activeElement, key = a && body.contains(a) ? a.dataset.bind : null;
   body.innerHTML = LEFT[ui.ltab]();
-  body.scrollTop = top;
+  body.dataset.tab = ui.ltab;
+  const sc = $('.pscroll', body);
+  if (sc) sc.scrollTop = ui.scroll[ui.ltab] || 0;
   if (key) { const el = $(`[data-bind="${key}"]`, body); if (el) el.focus(); }
   if (document.activeElement !== $('#roomName')) $('#roomName').value = state.room;
   document.title = state.room + ' - セッションボード';
@@ -911,8 +984,8 @@ async function sendChat() {
   // ダイスの結果（その場で振ったもの・ダイス欄から貼ったもの）は、転がる演出が終わってから発言にする
   const anim = r ? { ...r, text } : ui.dice.find(d => d.text === text);
   if (anim && tab !== 'secret') {
-    playDice(anim);
-    toPlayer({ type: 'dice', anim: { text: anim.text, cls: anim.cls, rands: anim.rands } });
+    playDice({ ...anim, lock: true });
+    toPlayer({ type: 'dice', anim: { text: publicMask()(anim.text), cls: anim.cls, rands: anim.rands, lock: true } });
     await new Promise(res => setTimeout(res, DICE_MS + 300));
   }
   pushMsg(tab, from, text, extra);
@@ -967,6 +1040,7 @@ const DICE_MS = 1000;
 const fx = { timer: 0, shuffle: 0 };
 function playDice(a) {
   const el = $('#diceFx'), rs = (a.rands || []).slice(0, 12);
+  fx.lock = !!a.lock; // GMが振ったダイス：プレイヤー側（別ウィンドウ・スマホ）からは消せない
   clearTimeout(fx.timer); cancelAnimationFrame(fx.raf);
   if (!rs.length) return;
   // D100 は十の位と一の位の2個のD10で見せる
@@ -977,7 +1051,7 @@ function playDice(a) {
   el.style.width = lay.aw + 'px';
   el.style.fontSize = (IS_PHONE ? 13 : IS_PLAYER ? 22 : 14) + 'px';
   el.innerHTML = '<canvas></canvas><div class="fx-text"></div>';
-  el.className = 'dicefx show';
+  el.className = 'dicefx show' + (IS_PLAYER && fx.lock ? ' locked' : '');
   diceSound();
 
   const n = dice.length, s = Math.min(IS_PHONE ? 30 : IS_PLAYER ? 52 : 34, lay.aw * 0.9 / (n * 2.5)); // s = ダイスの半径(px)
@@ -1007,8 +1081,21 @@ function playDice(a) {
     const t = $('.fx-text', el);
     t.textContent = a.text;
     t.className = 'fx-text show ' + (a.cls || '');
-    fx.timer = setTimeout(() => { el.className = 'dicefx'; }, 2800);
+    // クリックするまで出したままにする（何もしなくてよい）
   }, DICE_MS);
+}
+
+// ダイスの表示を消す。tell = ほかの画面にも消すよう伝える（GM・プレイヤー・スマホの誰がクリックしても全員の画面から消える）
+function hideDice(tell) {
+  clearTimeout(fx.timer); cancelAnimationFrame(fx.raf);
+  $('#diceFx').className = 'dicefx';
+  if (tell) { if (IS_PLAYER) toGM({ type: 'diceOff' }); else toPlayer({ type: 'diceOff' }); }
+}
+function bindDice() {
+  const el = $('#diceFx');
+  el.addEventListener('pointerdown', e => e.stopPropagation());
+  el.addEventListener('dblclick', e => e.stopPropagation());
+  el.addEventListener('click', () => { if (!(IS_PLAYER && fx.lock)) hideDice(true); });
 }
 
 /* ---------- 3Dダイス（多面体を自前で計算して canvas に描く） ---------- */
@@ -1258,7 +1345,7 @@ async function doRoll(expr) {
   const r = await rollAny(expr);
   if (!r) return toast('ダイス式を読み取れませんでした（例: 2d6+3）');
   r.text = `${who}：${r.text}`; // 例: 探索者1：1D100 ＞ 24
-  playDice(r); // ダイス欄で振った分はGM画面だけ。チャットに送るとプレイヤー画面でも転がる
+  playDice({ ...r, lock: true }); // ダイス欄で振った分はGM画面だけ。チャットに送るとプレイヤー画面でも転がる
   ui.dice.unshift(r);
   ui.dice.length = Math.min(ui.dice.length, 20);
   renderDice();
@@ -1309,8 +1396,17 @@ function editChar(id) {
           <div class="row"><button class="btn" data-act="pickCharImg" data-id="${id}">画像を選ぶ</button></div>
         </div></div>
       <div class="cols">
-        <label class="f">イニシアティブ（行動順。ふつうはDEX）<input type="number" data-bind="${p}.init" value="${esc(c.init)}"></label>
+        <label class="f">イニシアティブ（DEX）<input type="number" data-bind="${p}.init" value="${esc(c.init)}" title="行動順。大きいほど先に手番が回ります"></label>
         <label class="f">コマの大きさ（マス）<input type="number" min="0.5" step="0.5" data-bind="${p}.size" value="${esc(c.size)}"></label>
+      </div>
+      <div class="cols">
+        <label class="f">種類
+          <select data-bind="${p}.kind"><option value="pc"${isPC(c) ? ' selected' : ''}>プレイヤー</option><option value="npc"${isPC(c) ? '' : ' selected'}>NPC</option></select></label>
+        <div class="hint" style="align-self:center">プレイヤーのコマだけ、スマホの「あなた」で選べます。</div>
+      </div>
+      <div class="f"><span>コマの色（画像がないとき）</span>
+        <div class="swatches">${CHAR_COLORS.map(col => `<button class="swatch${charColor(c) === col ? ' on' : ''}" style="background:${col}" data-act="setChar" data-id="${id}" data-key="color" data-val="${col}" title="${col}" aria-label="コマの色 ${col}"></button>`).join('')}
+          <input type="color" data-bind="${p}.color" value="${esc(charColor(c))}" title="好きな色を選ぶ" aria-label="好きな色を選ぶ"></div>
       </div>
       <h4>ステータス</h4>
       ${c.status.map((st, i) => `<div class="strow">
@@ -1327,7 +1423,8 @@ function editChar(id) {
       <h4>公開設定</h4>
       ${chk(`${p}.onBoard`, '盤面にコマを置く', c.onBoard)}
       ${chk(`${p}.hidden`, '秘匿（プレイヤー画面にコマも名前も出さない）', c.hidden)}
-      ${chk(`${p}.secretStatus`, 'ステータスだけ非公開にする', c.secretStatus)}
+      ${chk(`${p}.secretStatus`, 'ステータスだけ非公開にする（行動順の値も見せない）', c.secretStatus)}
+      ${chk(`${p}.secretName`, '名前だけ非公開にする（「？？？」と表示し、画像も出さない）', c.secretName)}
       <label class="f">GMメモ（秘匿）<textarea data-bind="${p}.memo">${esc(c.memo)}</textarea></label>
       <div class="row"><button class="btn" data-act="dupChar" data-id="${id}">複製</button><button class="btn danger" data-act="delChar" data-id="${id}">削除</button>
         <span class="spacer"></span><button class="btn primary" data-act="closeDlg">閉じる</button></div>
@@ -1470,6 +1567,7 @@ function loadState(s) {
   const d = defaultState();
   state = { ...d, ...s };
   for (const k of ['fg', 'bg', 'bgm', 'memo', 'turn', 'view']) state[k] = { ...d[k], ...(s[k] || {}) };
+  for (const c of state.chars) if (!c.kind) c.kind = c.sheet ? 'pc' : 'npc'; // 種類の区別がなかった頃のコマ：シート付きをプレイヤーとみなす
   state.bgm.playing = false; // ブラウザは操作なしの自動再生を許さないため
 }
 
@@ -1481,7 +1579,7 @@ function importCcfolia(text) {
   if (!d || typeof d.name !== 'string') return null;
   const st = Array.isArray(d.status) ? d.status.filter(s => s && s.label).map(s => ({ label: String(s.label), value: num(s.value), max: s.max == null ? '' : num(s.max) })) : [];
   return newChar({
-    name: d.name, init: num(d.initiative, 10), secretStatus: !!d.secret,
+    name: d.name, init: num(d.initiative, 10), // 公開設定はほかのコマと同じく、すべて伏せた状態から
     memo: [d.memo, d.commands].filter(Boolean).join('\n\n'),
     ...(st.length ? { status: st } : {}),
   });
@@ -1539,24 +1637,29 @@ function makerSheet(ms) {
     era: ERAS[ms.era].label,
     stats: STATS.map(s => [s.k, st(s.k)]),
     derived: [['SAN', san], ['最大SAN', maxSan], ['幸運', st('POW') * 5], ['アイデア', st('INT') * 5], ['知識', Math.min(99, st('EDU') * 5)], ['HP', hp], ['MP', st('POW')], ['DB', db]],
-    skills: rows.map(r => ({ n: name(r), b: base(r), t: total(r), o: occSet.has(r.id), g: r.def.g })),
+    skills: rows.map(r => ({ id: r.id, n: name(r), b: base(r), t: total(r), o: occSet.has(r.id), g: r.def.g })),
     bg: BACKGROUND_FIELDS.filter(b => str((ms.bg || {})[b.k]).trim()).map(b => [b.n, str(ms.bg[b.k])]),
     dex: st('DEX'), hp, mp: st('POW'), san, maxSan,
   };
 }
-// 貼り付けられた文字列が探索者メーカーのJSONならシートにする
-function parseMakerJson(text) {
-  try { return makerSheet(JSON.parse(text)); } catch { return null; }
+// 貼り付けられた文字列が探索者メーカーのJSONなら { sh: シート, src: 元のデータ } を返す。
+// src は、成長後のシートを探索者メーカーで読み込める形で書き出すときに使う
+function readMaker(text) {
+  try { const src = JSON.parse(text), sh = makerSheet(src); return sh ? { sh, src } : null; } catch { return null; }
 }
-// 探索者メーカーの「⑥ 完成」と同じ並び・同じ見た目のシート
-function sheetHTML(sh, showAll, rollable) {
-  // rollable（スマホの自分のシート）のときは、技能や派生値を押すとその値で振れる
-  const tap = (label, v) => rollable && Number.isFinite(+v) && +v > 0 ? ` data-roll="CCB<=${+v} ${esc(label)}" role="button" tabindex="0"` : '';
-  const skills = sh.skills.filter(s => showAll || s.t !== s.b || s.o);
+// 探索者メーカーの「⑥ 完成」と同じ並び・同じ見た目のシート。
+// opt.all = 初期値のままの技能も出す / opt.roll = 押すと振れる（スマホ）/ opt.edit = 'gm'（成長チェックと技能値の変更）・'pl'（成長チェックだけ）
+function sheetHTML(sh, opt = {}) {
+  const tap = (label, v) => opt.roll && Number.isFinite(+v) && +v > 0 ? ` data-roll="CCB<=${+v} ${esc(label)}" role="button" tabindex="0"` : '';
+  const skills = sh.skills.map((s, i) => ({ ...s, i })).filter(s => opt.all || s.t !== s.b || s.o || s.c);
   // 技能をカテゴリ（戦闘・探索・行動・交渉・知識）ごとにまとめる。カテゴリを持たない古いシートは技能名から引く
   const defs = typeof SKILLS === 'undefined' ? [] : SKILLS;
   const groupOf = s => s.g || (defs.find(d => s.n === d.n || s.n.startsWith(d.n + '（')) || {}).g || 'その他';
   const groups = [...(typeof SKILL_GROUPS === 'undefined' ? [] : SKILL_GROUPS), 'その他'].map(g => [g, skills.filter(s => groupOf(s) === g)]).filter(x => x[1].length);
+  const row = s => `<div class="sh-skill ${s.o ? 'occ' : ''}"${tap(s.n, s.t)}>
+      ${opt.edit ? `<input type="checkbox" class="gc" data-gc="${s.i}"${s.c ? ' checked' : ''} title="成長チェック" aria-label="${esc(s.n)} の成長チェック">` : `<span class="gc-mark">${s.c ? '☑' : ''}</span>`}
+      <span class="n">${esc(s.n)}</span><span class="v"><span class="b">${esc(s.b)}→</span>${opt.edit === 'gm'
+        ? `<input type="number" class="gv" data-gv="${s.i}" value="${esc(s.t)}" min="0" max="999" aria-label="${esc(s.n)} の現在値">` : esc(s.t)}</span></div>`;
   return `<div class="sheet">
     <div class="sh-title">
       <div>
@@ -1576,24 +1679,191 @@ function sheetHTML(sh, showAll, rollable) {
 
     <h2>能力値</h2>
     <div class="sh-stats">${sh.stats.map(([k, v]) => `<div class="sh-stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
-    <div class="sh-derived">${sh.derived.map(([k, v]) => `<div${['幸運', 'アイデア', '知識'].includes(k) ? tap(k, v) : ''}><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
+    <div class="sh-derived">${sh.derived.map(([k, v]) => `<div data-dk="${esc(k)}"${['幸運', 'アイデア', '知識'].includes(k) ? tap(k, v) : ''}><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
 
     <h2>技能</h2>
-    ${rollable ? '<p class="sh-legend" style="margin:0 0 8px">技能や「幸運・アイデア・知識」を押すと、その値でダイスを振れます。</p>' : ''}
-    <label class="chk sheet-toggle"><input type="checkbox" data-sheet-all${showAll ? ' checked' : ''}> 初期値のままの技能も表示する</label>
+    ${opt.roll ? '<p class="sh-legend" style="margin:0 0 8px">技能や「幸運・アイデア・知識」を押すと、その値でダイスを振れます。</p>' : ''}
+    ${opt.edit === 'gm' ? '<p class="sh-legend" style="margin:0 0 8px">技能の現在値は、数字を書き換えると変更できます。</p>' : ''}
+    <label class="chk sheet-toggle"><input type="checkbox" data-sheet-all${opt.all ? ' checked' : ''}> 初期値のままの技能も表示する</label>
     ${groups.map(([g, list]) => `<h3 class="sh-group">${esc(g)}技能</h3>
-    <div class="sh-skills">${list.map(s => `<div class="sh-skill ${s.o ? 'occ' : ''}"${tap(s.n, s.t)}><span class="n">${esc(s.n)}</span><span class="v"><span class="b">${esc(s.b)}→</span>${esc(s.t)}</span></div>`).join('')}</div>`).join('')}
-    <p class="sh-legend">◆＝職業技能　（初期値→現在値）</p>
+    <div class="sh-skills">${list.map(row).join('')}</div>`).join('')}
+    <p class="sh-legend">◆＝職業技能　☑＝成長チェック　（初期値→現在値）</p>
 
     ${sh.bg.length ? `<h2>バックグラウンド</h2>
     <div class="sh-bg">${sh.bg.map(([n, t]) => `<div><h4>${esc(n)}</h4><p>${esc(t)}</p></div>`).join('')}</div>` : ''}
+    ${opt.edit === 'gm' ? `<div class="sheet-actions">
+      <button class="btn primary" type="button" data-sheet-commit>保存</button><button class="btn" type="button" data-sheet-cancel>キャンセル</button>
+      <span class="hint sheet-dirty"${opt.dirty ? '' : ' hidden'}>保存していない変更があります</span><span class="spacer"></span>
+      <button class="btn" type="button" data-sheet-save${opt.dirty ? ' disabled' : ''} title="保存した内容を出力します。変更したあとは先に保存してください">出力</button></div>` : ''}
+    ${opt.edit === 'pl' ? '<div class="sheet-actions"><button class="btn primary" type="button" data-sheet-save>出力</button><span class="hint">成長チェックを含めて書き出せます</span></div>' : ''}
   </div>`;
 }
+// GM画面のシートは下書き（draft）を編集し、「保存」を押すまでコマには反映しない
 function viewSheet(id) {
+  const c0 = state.chars.find(x => x.id === id);
+  if (!c0 || !c0.sheet) return;
+  ui.sheetId = id; ui.draft = clone(c0.sheet); ui.dirty = false;
   openDlg(() => {
     const c = state.chars.find(x => x.id === id);
-    return c && c.sheet ? `${dlgHead(`${esc(c.name)} の探索者シート`)}<div class="dlg-body">${sheetHTML(c.sheet, ui.sheetAll)}</div>` : '';
+    return c && ui.draft ? `${dlgHead(`${esc(c.name)} の探索者シート`)}<div class="dlg-body">${sheetHTML(ui.draft, { all: ui.sheetAll, edit: 'gm', dirty: ui.dirty })}</div>` : '';
   }, 'wide');
+}
+// 画面を作り直してもスクロール位置を保つ
+function refreshSheetDlg() { const d = $('#dlg'), top = d.scrollTop; refreshDlg(); d.scrollTop = top; }
+function saveSheet() {
+  const c = state.chars.find(x => x.id === ui.sheetId);
+  if (!c || !ui.draft) return;
+  c.sheet = clone(ui.draft);
+  // 最大SAN（99 − クトゥルフ神話技能）が変わったら、コマのSANの最大値も合わせる
+  const san = c.status.find(x => x.label === 'SAN');
+  if (san && Number.isFinite(c.sheet.maxSan)) { san.max = c.sheet.maxSan; if (num(san.value) > san.max) san.value = san.max; }
+  ui.dirty = false;
+  commit();
+  refreshSheetDlg();
+  toast('探索者シートを保存しました');
+}
+// メインのダイアログを閉じる。シートに保存していない変更があれば確認する
+function closeMainDlg() {
+  if ($('#dlg .sheet') && ui.dirty && !confirm('保存していない変更があります。破棄して閉じますか？')) return;
+  ui.dirty = false; ui.draft = null;
+  $('#dlg').close();
+}
+// 成長チェック・技能値の変更。GM画面はそのまま書き換え、スマホはGM画面へ頼む（スマホからは成長チェックだけ）
+function sheetEdit(key, i, v) {
+  if (IS_PHONE) {
+    const s = state.sheet && state.sheet.skills[i];
+    if (key !== 'c' || !s) return;
+    s.c = v;
+    return toGM({ type: 'check', i, v });
+  }
+  const s = ui.draft && ui.draft.skills[i];
+  if (!s) return;
+  s[key] = v;
+  if (key === 't' && (s.id === 'mythos' || s.n === 'クトゥルフ神話')) { // クトゥルフ神話技能が増減したら最大SANも変える
+    ui.draft.maxSan = 99 - v;
+    const d = ui.draft.derived.find(x => x[0] === '最大SAN'), cell = $('#dlg [data-dk="最大SAN"] b');
+    if (d) d[1] = ui.draft.maxSan;
+    if (cell) cell.textContent = ui.draft.maxSan;
+  }
+  ui.dirty = true; // 画面は作り直さない（入力中のカーソルを保つ）。出力は保存してから
+  const out = $('#dlg [data-sheet-save]'), note = $('#dlg .sheet-dirty');
+  if (out) out.disabled = true;
+  if (note) note.hidden = false;
+}
+// 探索者メーカーの「⑥ 完成」と同じ出力（テキスト／ココフォリア駒／JSON）を、いまのシートの内容で作る
+function sheetOutputs(sh, src, status) {
+  const d = Object.fromEntries(sh.derived), shown = sh.skills.filter(s => s.t !== s.b || s.o || s.c);
+  const text = [
+    `【名前】${sh.name}${sh.kana ? `（${sh.kana}）` : ''}`,
+    `【職業】${sh.occ}　【時代】${sh.era}`,
+    `【年齢】${sh.age}　【性別】${sh.sex}　【出身】${sh.birthplace}　【学校・学位】${sh.school}`,
+    '',
+    '■能力値',
+    sh.stats.map(([k, v]) => `${k}:${v}`).join('  '),
+    `SAN:${d.SAN}  幸運:${d['幸運']}  アイデア:${d['アイデア']}  知識:${d['知識']}  HP:${d.HP}  MP:${d.MP}  DB:${d.DB}`,
+    '',
+    '■技能（初期値から変更したもの・職業技能）',
+    ...shown.map(s => `${s.o ? '◆' : '・'}${s.n} ${s.t}%${s.c ? '（成長チェック）' : ''}`),
+    ...(sh.bg.length ? ['', '■バックグラウンド', ...sh.bg.flatMap(([n, t]) => [`【${n}】`, String(t).trim()])] : []),
+  ].join('\n');
+  const db = String(d.DB);
+  const ccfolia = JSON.stringify({
+    kind: 'character',
+    data: {
+      name: sh.name || '探索者',
+      initiative: sh.dex,
+      memo: [sh.kana || '', `職業：${sh.occ}　年齢：${sh.age}　性別：${sh.sex}`, `出身：${sh.birthplace}　学校：${sh.school}`, '', ...sh.bg.map(([n, t]) => `【${n}】${String(t).trim()}`)].join('\n').trim(),
+      commands: [
+        'CCB<={SAN} 【正気度ロール】', `CCB<=${d['アイデア']} 【アイデア】`, `CCB<=${d['幸運']} 【幸運】`, `CCB<=${d['知識']} 【知識】`,
+        ...shown.filter(s => s.t > 0).map(s => `CCB<=${s.t} 【${s.n}】`),
+        `1d3+${db === '0' ? '0' : db.replace('+', '')} 【ダメージ判定（こぶし）】`.replace('+-', '-'),
+        ...sh.stats.map(([k, v]) => `CCB<=${v}*5 【${k}×5】`),
+      ].join('\n'),
+      // いまのHP・MP・SAN（セッションで減った値）があればそれを使う
+      status: status && status.length ? status.filter(x => x.label).map(x => ({ label: x.label, value: num(x.value), max: x.max === '' || x.max == null ? num(x.value) : num(x.max) }))
+        : [{ label: 'HP', value: d.HP, max: d.HP }, { label: 'MP', value: d.MP, max: d.MP }, { label: 'SAN', value: d.SAN, max: d['最大SAN'] }],
+      params: [...sh.stats.map(([k, v]) => ({ label: k, value: String(v) })), { label: 'DB', value: db }],
+    },
+  });
+  // 探索者メーカーで読み込めるJSON：元のデータに、技能値の増減を興味ポイントとして足し込む
+  let json = null;
+  const orig = src && typeof ERAS !== 'undefined' ? makerSheet(src) : null;
+  if (orig && sh.skills.every(s => s.id)) {
+    const out = clone(src);
+    out.alloc = out.alloc || {};
+    for (const s of sh.skills) {
+      const o = orig.skills.find(x => x.id === s.id), diff = o ? s.t - o.t : 0;
+      if (!diff) continue;
+      const a = out.alloc[s.id] = out.alloc[s.id] || { o: 0, i: 0 };
+      a.i = (a.i || 0) + diff;
+    }
+    json = out;
+  }
+  return { text, ccfolia, json };
+}
+// 「保存・出力」のポップアップ（GM画面・スマホ共通）
+function openSheetExport() {
+  let sh, src, status;
+  if (IS_PHONE) {
+    const me = state.chars.find(c => c.pc && c.name === ph.name);
+    sh = state.sheet; src = state.sheetSrc; status = me && me.status;
+  } else {
+    if (ui.dirty) return toast('先に「保存」を押してください');
+    const c = state.chars.find(x => x.id === ui.sheetId);
+    if (c) { sh = c.sheet; src = c.sheetSrc; status = c.status; }
+  }
+  if (!sh) return;
+  const dlg = $('#exportDlg'), out = sheetOutputs(sh, src, status), dis = out.json ? '' : ' disabled';
+  dlg.innerHTML = `<div class="dlg-head">探索者シートの保存・出力<span class="spacer"></span><button class="btn sm" type="button" data-x="close">×</button></div>
+    <div class="dlg-body">
+      <div class="hint">成長チェックと、変更した技能値を含めて出力します。</div>
+      <div class="export-btns">
+        <button class="btn primary" type="button" data-x="ccf">ココフォリア駒としてコピー</button>
+        <button class="btn" type="button" data-x="text">テキストでコピー</button>
+        <button class="btn" type="button" data-x="print">印刷 / PDF</button>
+        <button class="btn" type="button" data-x="save"${dis}>JSONで保存</button>
+        <button class="btn" type="button" data-x="copy"${dis}>JSONをコピー</button>
+      </div>
+      <div class="hint">${out.json ? 'JSONは探索者メーカーの「JSONを読み込む」で開けます。増えた技能値は興味ポイントとして反映されます（成長チェックの印はJSONには入りません）。'
+        : 'このシートは以前の版で取り込んだため、JSONでは出力できません。GM画面で探索者メーカーのデータを取り込み直すと使えるようになります。'}</div>
+    </div>`;
+  dlg.onclick = e => {
+    const x = e.target === dlg ? 'close' : (e.target.closest('[data-x]') || {}).dataset?.x;
+    if (!x) return;
+    if (x === 'close') return dlg.close();
+    if (x === 'ccf') copyText(out.ccfolia);
+    if (x === 'text') copyText(out.text);
+    if (x === 'copy') copyText(JSON.stringify(out.json));
+    if (x === 'print') { dlg.close(); printSheet(sh); }
+    if (x === 'save') {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(out.json, null, 2)], { type: 'application/json' }));
+      Object.assign(document.createElement('a'), { href: url, download: `${sh.name || '探索者'}.json` }).click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  };
+  dlg.showModal();
+}
+// 印刷用に、シートだけを白地で別枠へ描いて印刷する
+function printSheet(sh) {
+  let area = $('#printArea');
+  if (!area) { area = Object.assign(document.createElement('div'), { id: 'printArea' }); document.body.append(area); }
+  area.innerHTML = sheetHTML(sh, {});
+  document.body.classList.add('print-sheet');
+  const done = () => { document.body.classList.remove('print-sheet'); area.innerHTML = ''; window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  window.print();
+}
+function bindSheet() {
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.matches('[data-gc]')) sheetEdit('c', +t.dataset.gc, t.checked);
+    if (t.matches('[data-gv]')) sheetEdit('t', +t.dataset.gv, clamp(Math.round(num(t.value)), 0, 999));
+  });
+  document.addEventListener('click', e => {
+    if (e.target.closest('[data-sheet-save]')) openSheetExport();
+    if (e.target.closest('[data-sheet-commit]')) saveSheet();
+    if (e.target.closest('[data-sheet-cancel]')) closeMainDlg();
+  });
 }
 // 探索者メーカーのデータを貼り付ける画面。id があればそのコマにシートを付け、なければ新しいコマを作る
 function pasteDataDlg(id) {
@@ -1607,6 +1877,24 @@ function pasteDataDlg(id) {
 }
 
 
+// 手番を進める（dir = 1）・戻す（dir = -1）。行動順（イニシアティブの大きい順）にたどり、秘匿のコマは飛ばす
+function stepTurn(dir) {
+  const all = order(), n = all.length;
+  if (!all.some(c => !c.hidden)) return toast('手番を回せるコマがありません（秘匿のコマは飛ばします）');
+  let i = all.findIndex(c => c.id === state.turn.id), round = state.turn.round;
+  if (i < 0 && dir < 0) return toast('これより前の手番はありません');
+  for (let k = 0; k <= n; k++) {
+    i += dir;
+    if (i >= n) { i = 0; round++; }
+    if (i < 0) { if (round <= 1) return toast('これより前の手番はありません'); i = n - 1; round--; }
+    if (!all[i].hidden) break;
+  }
+  state.turn = { id: all[i].id, round };
+  sysMsg(`ラウンド${round}：${all[i].name} の手番${dir < 0 ? '（戻しました）' : ''}`);
+  commit();
+}
+
+/* ---------- 操作 ---------- */
 function walk(path) {
   const seg = path.split('.');
   let o = state;
@@ -1620,7 +1908,15 @@ const A = {
   ctab(el) { ui.tab = el.dataset.tab; if (ui.tab !== 'secret' && ui.tab !== 'memo') state.view.ptab = ui.tab; commit(); },
   set(el) { const w = walk(el.dataset.path); if (w) { w[0][w[1]] = el.dataset.val; commit(); } },
   toggle(el) { const w = walk(el.dataset.path); if (w) { w[0][w[1]] = !w[0][w[1]]; commit(); } },
-  closeDlg() { $('#dlg').close(); },
+  closeDlg() { closeMainDlg(); },
+  toggleSort() { ui.sortInit = !ui.sortInit; commit(); },
+  moveChar(el) { // コマ一覧の並び順を入れ替える
+    const i = state.chars.findIndex(c => c.id === el.dataset.id), j = i + +el.dataset.d;
+    if (i < 0 || j < 0 || j >= state.chars.length) return;
+    state.chars.splice(j, 0, state.chars.splice(i, 1)[0]);
+    commit();
+  },
+  setChar(el) { const c = byId(state.chars, el); if (c) { c[el.dataset.key] = el.dataset.val; refreshDlg(); commit(); } },
   closePicker() { $('#picker').close(); },
 
   openPlayer() {
@@ -1669,32 +1965,26 @@ const A = {
   attachSheet(el) { pasteDataDlg(el.dataset.id); },
   pickSheetFile() { $('#fileSheet').click(); },
   viewSheet(el) { viewSheet(el.dataset.id); },
-  removeSheet(el) { const c = byId(state.chars, el); if (c && confirm(`「${c.name}」の探索者シートを外しますか？`)) { delete c.sheet; refreshDlg(); commit(); } },
+  removeSheet(el) { const c = byId(state.chars, el); if (c && confirm(`「${c.name}」の探索者シートを外しますか？`)) { delete c.sheet; delete c.sheetSrc; refreshDlg(); commit(); } },
   importCc() {
-    const text = $('#ccText').value, sh = parseMakerJson(text), id = ui.sheetFor;
+    const text = $('#ccText').value, mk = readMaker(text), sh = mk && mk.sh, id = ui.sheetFor;
     if (id) { // 既存のコマにシートを付ける
       const c = state.chars.find(x => x.id === id);
       if (!c) return;
       if (!sh) return toast('探索者メーカーのデータとして読み取れませんでした（⑥完成の「JSONをコピー」を貼り付けてください）');
-      c.sheet = sh; commit(); editChar(id);
+      c.sheet = sh; c.sheetSrc = mk.src; commit(); editChar(id);
       return toast('探索者シートを取り込みました');
     }
     const c = sh ? newChar({
-      name: sh.name || '探索者', init: sh.dex, sheet: sh,
+      name: sh.name || '探索者', init: sh.dex, sheet: sh, sheetSrc: mk.src,
+      kind: 'pc', // 探索者メーカーから取り込んだコマはプレイヤー用。公開設定はほかのコマと同じく伏せた状態から
       status: [{ label: 'HP', value: sh.hp, max: sh.hp }, { label: 'MP', value: sh.mp, max: sh.mp }, { label: 'SAN', value: sh.san, max: sh.maxSan }],
     }) : importCcfolia(text);
     if (!c) return toast('駒データとして読み取れませんでした');
     state.chars.push(c); commit(); editChar(c.id);
   },
-  nextTurn() {
-    const o = order();
-    if (!o.length) return;
-    let i = o.findIndex(c => c.id === state.turn.id) + 1;
-    if (i >= o.length) { i = 0; if (state.turn.id) state.turn.round++; }
-    state.turn.id = o[i].id;
-    sysMsg(`ラウンド${state.turn.round}：${o[i].name} の手番`, o[i].hidden);
-    commit();
-  },
+  nextTurn() { stepTurn(1); },
+  prevTurn() { stepTurn(-1); },
   resetTurn() { state.turn = { id: null, round: 1 }; commit(); },
 
   // シーン
@@ -1800,7 +2090,8 @@ function bindEvents() {
     const el = e.target.closest('[data-act]');
     if (el && A[el.dataset.act]) A[el.dataset.act](el, e);
   });
-  for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) d.close(); });
+  for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) { if (d.id === 'dlg') closeMainDlg(); else d.close(); } });
+  $('#dlg').addEventListener('cancel', e => { e.preventDefault(); closeMainDlg(); }); // Esc でも、保存していないシートの変更は確認する
   $('#dlg').addEventListener('close', () => commit());
   // スマホ画面のプレビューは見出しをドラッグして動かせる
   $('#ppHead').addEventListener('pointerdown', e => {
@@ -1860,9 +2151,10 @@ function bindEvents() {
 /* ---------- プレイヤー画面 ---------- */
 function initListHTML() {
   const s = state;
-  return `<ul class="pinit">${order().map(c => {
+  // プレイヤー側は並べ替えない（並び順からDEXが分かってしまうため）。手番の印だけが行動順に移っていく
+  return `<ul class="pinit">${(IS_PLAYER ? s.chars : order()).map(c => {
     const st = (c.status || []).filter(x => x.label).map(x => `${esc(x.label)} ${esc(x.value)}${x.max !== '' && x.max != null ? '/' + esc(x.max) : ''}`).join('　');
-    return `<li class="${s.turn.id === c.id ? 'turn' : ''}">${thumb(c.img, c.name)}<div style="min-width:0"><div class="n">${esc(c.name)}</div>${st ? `<div class="s">${st}</div>` : ''}</div><span class="i">${esc(c.init)}</span></li>`;
+    return `<li class="${s.turn.id === c.id ? 'turn' : ''}">${thumb(c.img, c.name)}<div style="min-width:0"><div class="n">${esc(c.name)}</div>${st ? `<div class="s">${st}</div>` : ''}</div><span class="i">${c.init == null ? '' : esc(c.init)}</span></li>`;
   }).join('')}</ul>`;
 }
 function renderPlayer() {
@@ -1919,9 +2211,9 @@ function renderPhone() {
   }
   ph.myTurn = myTurn;
   // 自分のコマ（秘話の宛先）を選ぶ
-  const sel = $('#phName'), names = s.chars.map(c => c.name);
+  // 選べるのはプレイヤーのコマだけ。ほかの人が選んでいるコマは出さない
+  const sel = $('#phName'), taken = s.taken || [], names = s.chars.filter(c => c.pc && (c.name === ph.name || !taken.includes(c.name))).map(c => c.name);
   const opts = [['', '選んでください'], ...names.map(n => [n, n])];
-  if (ph.name && !names.includes(ph.name)) opts.push([ph.name, ph.name]);
   setHTML(sel, opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join(''));
   sel.value = ph.name;
 
@@ -1957,7 +2249,7 @@ function renderPhone() {
         : !s.view.chat ? '<div class="empty">いまはチャットが非表示になっています</div>' : list.map(m => msgHTML(m, false)).join('') || '<div class="empty">まだ発言がありません</div>'}</div>`;
   } else if (ph.tab === 'sheet') {
     html = !ph.name ? '<div class="empty">上の「あなた」で自分のコマを選ぶと、探索者シートがここに表示されます</div>'
-      : s.sheet ? sheetHTML(s.sheet, ph.sheetAll, true) : '<div class="empty">このコマには探索者シートが登録されていません</div>';
+      : s.sheet ? sheetHTML(s.sheet, { all: ph.sheetAll, roll: true, edit: 'pl' }) : '<div class="empty">このコマには探索者シートが登録されていません</div>';
   } else {
     html = s.memo.pub ? `<div class="pmemo">${esc(s.memo.pub)}</div>` : '<div class="empty">公開メモはありません</div>';
   }
@@ -1999,7 +2291,7 @@ function initPhone() {
   });
   $('#phDiceForm').addEventListener('submit', e => { e.preventDefault(); const v = $('#phExpr').value.trim(); if (v) rollNow(v); });
   document.addEventListener('click', e => {
-    const r = e.target.closest('[data-roll]');
+    const r = e.target.closest('input, button, label') ? null : e.target.closest('[data-roll]'); // 成長チェックなどを押したときは振らない
     if (r && confirm(`「${r.dataset.roll.replace(/^CCB<=(\d+) (.*)$/, '$2（$1）')}」で振りますか？`)) rollNow(r.dataset.roll);
   });
   try { ph.name = localStorage.getItem('coc-sb-name-' + ROOM) || ''; } catch { /* 保存できなくても使える */ }
@@ -2025,18 +2317,48 @@ function bindPhoneBoard() {
   let base = null;
   const mid = () => { const a = [...pts.values()], r = board.getBoundingClientRect(); return { x: a.reduce((n, p) => n + p.x, 0) / a.length - r.left, y: a.reduce((n, p) => n + p.y, 0) / a.length - r.top, d: a.length > 1 ? Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) : 0 }; };
   const grab = () => { base = pts.size ? { ...mid(), v: { ...ph.view }, s: scale } : null; };
-  board.addEventListener('pointerdown', e => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); try { board.setPointerCapture(e.pointerId); } catch { /* つかめなくても動かせる */ } grab(); });
+  // 自分のコマ（「あなた」で選んだプレイヤーのコマ）は、つかんで動かせる。動かした位置はGM画面へ送る
+  let drag = null;
+  const myPiece = () => state.chars.find(c => c.pc && c.name === ph.name);
+  const dragTo = (e, end) => {
+    const me = state.chars.find(c => c.id === drag.id);
+    if (!me) return;
+    me.x = drag.ox + (e.clientX - drag.sx) / scale / CELL;
+    me.y = drag.oy + (e.clientY - drag.sy) / scale / CELL;
+    if (end && state.view.snap) { me.x = Math.round(me.x); me.y = Math.round(me.y); }
+    ph.drag = { id: me.id, x: me.x, y: me.y };
+    renderBoard();
+    const now = Date.now();
+    if (end || now - drag.sent > 80) { drag.sent = now; toGM({ type: 'move', x: me.x, y: me.y, end: !!end }); }
+  };
+  board.addEventListener('pointerdown', e => {
+    const piece = e.target.closest('.piece'), me = myPiece();
+    if (piece && me && piece.dataset.id === me.id && !pts.size && !drag) {
+      drag = { pid: e.pointerId, id: me.id, sx: e.clientX, sy: e.clientY, ox: me.x, oy: me.y, sent: 0 };
+      try { board.setPointerCapture(e.pointerId); } catch { /* つかめなくても動かせる */ }
+      return;
+    }
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); try { board.setPointerCapture(e.pointerId); } catch { /* つかめなくても動かせる */ } grab();
+  });
   board.addEventListener('pointermove', e => {
+    if (drag && e.pointerId === drag.pid) return dragTo(e, false);
     if (!pts.has(e.pointerId) || !base) return;
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const m = mid(), z = clamp(base.v.zoom * (base.d && m.d ? m.d / base.d : 1), 1, ZOOM_MAX), s1 = base.s / base.v.zoom * z;
+    const m = mid(), z = clamp(base.v.zoom * (base.d && m.d ? m.d / base.d : 1), ZOOM_MIN, ZOOM_MAX), s1 = base.s / base.v.zoom * z;
     // つかんだ場所（マップ上の点）が指の下に留まるように動かす
     const ox = lay.l + (lay.aw - lay.W * base.s) / 2 + base.v.panX * CELL * base.s, oy = 24 + (lay.ah - lay.H * base.s) / 2 + base.v.panY * CELL * base.s;
     const wx = (base.x - ox) / base.s, wy = (base.y - oy) / base.s;
     ph.view = { zoom: z, panX: (m.x - wx * s1 - lay.l - (lay.aw - lay.W * s1) / 2) / (CELL * s1), panY: (m.y - wy * s1 - 24 - (lay.ah - lay.H * s1) / 2) / (CELL * s1) };
     renderBoard();
   });
-  const end = e => { pts.delete(e.pointerId); grab(); };
+  const end = e => {
+    if (drag && e.pointerId === drag.pid) {
+      dragTo(e, true);
+      drag = null;
+      return setTimeout(() => { ph.drag = null; }, 700); // GM画面からの折り返しが届くまでは手元の位置を保つ
+    }
+    pts.delete(e.pointerId); grab();
+  };
   board.addEventListener('pointerup', end);
   board.addEventListener('pointercancel', end);
   board.addEventListener('dblclick', () => { ph.view = { zoom: 1, panX: 0, panY: 0 }; renderBoard(); });
@@ -2123,6 +2445,8 @@ function connectPhone() {  clearTimeout(ph.retry);
 async function init() {
   document.body.classList.toggle('player', IS_PLAYER);
   bindMsgWin();
+  bindDice();
+  bindSheet();
   new ResizeObserver(() => renderBoard()).observe($('#board'));
   if (IS_PHONE) return initPhone();
   if (IS_PLAYER) return initPlayer();
