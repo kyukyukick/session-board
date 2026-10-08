@@ -302,7 +302,7 @@ body.phone { font-size: 15px; }
 body.phone .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 body.phone .main { flex: 1; min-height: 0; }
 body.phone .p-left, body.phone .p-chat, body.phone .p-hint { display: none; }
-body.phone .msgwin { bottom: 8px; }
+body.phone .msgwin { bottom: 0; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; } /* 横幅いっぱい・下端にぴったり */
 .ph-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top)); background: var(--surface); border-bottom: 1px solid var(--line); }
 .ph-head .tag { margin: 0; flex: none; }
 .ph-room { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -437,7 +437,7 @@ body.phone .piece.mine .pimg { outline: 3px dashed var(--accent); outline-offset
 .sh-skill { align-items: center; gap: 6px; }
 .sh-skill .n { flex: 1; min-width: 0; }
 .sh-skill .gc { flex: none; width: 16px; height: 16px; margin: 0; }
-.sh-skill .gc-mark { flex: none; width: 1em; color: var(--accent); }
+.sh-skill .gc-mark { flex: none; width: 1em; color: var(--warn); }
 .sh-skill .gv { width: 58px; padding: 0 4px; text-align: right; font-weight: 700; }
 .sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
 #exportDlg { width: min(420px, 94vw); }
@@ -489,3 +489,10 @@ body.phone .sh-skill .gc { width: 22px; height: 22px; }
 .phead { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
 .pscroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
 .pscroll .field { flex-wrap: wrap; } /* 幅が足りないときは切れずに折り返す */
+
+/* 探索者シート：バックグラウンドの編集欄（GM画面） */
+.sh-bg textarea { width: 100%; min-height: 64px; font-size: 14px; line-height: 1.5; }
+
+/* 成長判定：これから振る技能の案内 */
+.fx-text.note { font-size: 1.4em; padding: .8em 1.2em; line-height: 1.7; border-color: var(--accent); }
+body.phone .fx-text.note { font-size: 1.25em; padding: .7em .9em; }

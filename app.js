@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 56; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 65; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -323,20 +323,11 @@ function onPhoneData(conn, d) {
   }
   if (d.type === 'diceOff' && !fx.lock) { hideDice(false); toPlayer({ type: 'diceOff' }); }
   const mine = info.name && state.chars.find(c => c.name === info.name && isPC(c)); // このスマホのコマ
+  if (d.type === 'growth' && mine && mine.sheet) phoneGrowth(conn, info, mine);
   if (d.type === 'move' && mine && mine.onBoard && !mine.hidden) { // 自分のコマだけ動かせる
     mine.x = clamp(num(d.x, mine.x), -3, num(state.fg.cols, 20) + 2);
     mine.y = clamp(num(d.y, mine.y), -3, num(state.fg.rows, 12) + 2);
     commit(!!d.end);
-  }
-  if (d.type === 'check' && mine && mine.sheet && mine.sheet.skills[d.i]) { // 成長チェック
-    mine.sheet.skills[d.i].c = !!d.v;
-    commit();
-    // GMがそのシートを開いて編集中なら、下書きにも入れておく（保存で上書きして消さないように）
-    if ($('#dlg').open && ui.sheetId === mine.id && ui.draft && ui.draft.skills[d.i]) {
-      ui.draft.skills[d.i].c = !!d.v;
-      const box = $(`#dlg [data-gc="${+d.i}"]`);
-      if (box) box.checked = !!d.v;
-    }
   }
   if (d.type === 'need') sendPhoneImage(conn, d.id);
   if (d.type === 'roll') { // スマホからのダイスは全員に見える形（メインタブ）で振る
@@ -356,6 +347,51 @@ function onPhoneData(conn, d) {
     if (document.hidden || ui.tab !== (secret ? 'secret' : 'chat')) notify(secret ? `${who} から秘話が届きました` : `${who} が雑談に書き込みました`);
     commit();
   }
+}
+// スマホからの成長判定（第6版）：成長チェックの付いた技能ごとに 1D100 を振り、技能値より大きければ成長して 1D10 を振る。
+// ダイスを見せるところまでで、技能値への反映はGMがシートで行う
+async function phoneGrowth(conn, info, me) {
+  const list = me.sheet.skills.filter(s => s.c);
+  if (!list.length) { if (conn.open) conn.send({ coc: 1, type: 'toast', text: '成長チェックの付いた技能がありません' }); return; }
+  if (info.busy) return;
+  info.busy = true;
+  const from = me.name, mask = publicMask(), d = n => 1 + Math.floor(Math.random() * n);
+  // 技能ごとに「どの技能か」を先に見せ、クリック → 判定（1D100）→ 成長ならクリック → 成長ダイス（1D10）と進む。
+  // クリック = ダイスの表示を閉じること。hint があるときは、閉じられるまで待つ
+  const clicked = () => new Promise(res => fx.waiters.push(res));
+  const tail = hint => hint ? `\n▼ ${hint}` : '';
+  // 画面に出す文は、名前・見出し・技能の行で改行を決めておく（fit = 行の途中では折り返さない）
+  const note = async (text, hint) => { // ダイスなしの案内。hint があるときはクリックを待つ
+    playDice({ text: text + tail(hint), fit: true });
+    toPlayer({ type: 'dice', anim: { text: mask(text) + tail(hint), fit: true } });
+    if (hint) await clicked();
+  };
+  const show = async (chat, text, cls, rands, hint) => { // chat = チャットに残す1行の文
+    playDice({ text: text + tail(hint), cls, rands, fit: true });
+    toPlayer({ type: 'dice', anim: { text: mask(text) + tail(hint), cls, rands, fit: true } });
+    await new Promise(res => setTimeout(res, DICE_MS + 300));
+    pushMsg('main', from, chat);
+    commit();
+    if (hint) await clicked();
+  };
+  const grown = []; // 成長した技能と増えた値（最後に一覧で見せる）
+  try {
+    for (const [k, s] of list.entries()) {
+      const last = k === list.length - 1, onward = last ? 'クリックで結果を見る' : 'クリックで次の技能へ';
+      await note(`${from}\n成長判定（${k + 1}/${list.length}）\n【${s.n}】 現在 ${s.t}`, 'クリックで判定する');
+      const a = d(100), up = a > s.t, res = `1D100 ＞ ${a} ＞ ${up ? '成長' : '成長なし'}`;
+      await show(`${from}：成長判定【${s.n} ${s.t}】${res}`, `${from}\n成長判定【${s.n} ${s.t}】\n${res}`, up ? 'ok' : 'ng', [{ sides: 100, value: a }], up ? 'クリックで成長ダイスを振る' : onward);
+      if (!up) continue;
+      const b = d(10), gain = `1D10 ＞ ${b} ＞ ${s.t} → ${s.t + b}`;
+      await show(`${from}：成長【${s.n}】${gain}`, `${from}\n成長【${s.n}】\n${gain}`, 'ok', [{ sides: 10, value: b }], onward);
+      grown.push(`${s.n}　+${b}（${s.t} → ${s.t + b}）`);
+    }
+    // 最後に、成長した技能と増えた値をまとめて見せる（チャットにも残して、GMが反映するときの控えにする）
+    const lines = grown.length ? grown.join('\n') : '成長した技能はありません';
+    await note(`${from}\n成長の結果\n${lines}`, '');
+    pushMsg('main', from, `${from}：成長の結果\n${lines}`);
+    commit();
+  } finally { info.busy = false; }
 }
 async function phoneRoll(conn, info, expr) {
   const r = await rollAny(expr);
@@ -587,14 +623,14 @@ function renderMsgWin() {
   $('#mwOpen').hidden = !m || mw.closed !== m.id; // × で閉じたあと、開き直すためのボタン
   if (!m) { mw.id = null; mw.closed = null; clearInterval(mw.timer); return; } // オフにしたら × で閉じた状態も解除する
   // 幅は使える横幅に対する割合、高さは文章の行数で持つ（GM画面とプレイヤー画面で文字の大きさが違うため）
-  const w = num(state.view.mwW, 0) ? clamp(num(state.view.mwW), 0.2, 1) * lay.aw : lay.aw * 0.9;
+  const w = IS_PHONE ? lay.bw : num(state.view.mwW, 0) ? clamp(num(state.view.mwW), 0.2, 1) * lay.aw : lay.aw * 0.9; // スマホは画面の横幅いっぱい
   // 文字も画像も使える横幅に比例させ、GM画面とプレイヤー画面で同じ見え方（同じ位置で改行）にする
   // 100% = フルHD（横1920）のプレイヤー画面で 24px。どの画面も横幅に比例させるので、プレイヤー画面のウィンドウの大きさを変えても
   // GM画面の文字は変わらず、プレイヤー画面はウィンドウに合わせて全体が同じ見え方のまま縮む
   // GM画面の基準 1282 = フルHDのプレイヤー画面で行動順とチャットを両方出したときに盤面へ使える横幅
   const ratio = IS_PHONE ? clamp(lay.aw / 640, 0.55, 1) : IS_PLAYER ? clamp((lay.bw - 638) / 1282, 0.4, 2.5) : lay.aw / 1282;
   el.style.fontSize = Math.max(8, MW_FONT * ratio * clamp(num(state.view.mwFont, 1), 0.5, 2)) + 'px';
-  el.style.left = lay.l + (lay.aw - w) / 2 + 'px';
+  el.style.left = (IS_PHONE ? 0 : lay.l + (lay.aw - w) / 2) + 'px';
   el.style.width = w + 'px';
   const u = assetUrl(m.img), img = $('.mw-img', el);
   img.hidden = !u;
@@ -1037,12 +1073,22 @@ function roll(src) {
 }
 /* ダイスが転がる演出。盤面の中央に出て、止まると結果を表示する */
 const DICE_MS = 1000;
-const fx = { timer: 0, shuffle: 0 };
+const fx = { timer: 0, shuffle: 0, waiters: [] };
 function playDice(a) {
   const el = $('#diceFx'), rs = (a.rands || []).slice(0, 12);
   fx.lock = !!a.lock; // GMが振ったダイス：プレイヤー側（別ウィンドウ・スマホ）からは消せない
   clearTimeout(fx.timer); cancelAnimationFrame(fx.raf);
-  if (!rs.length) return;
+  if (!rs.length) { // ダイスなしの案内だけを出す（成長判定で、これから振る技能を見せるとき）
+    if (!a.text) return;
+    el.style.left = lay.l + 'px';
+    el.style.width = lay.aw + 'px';
+    el.style.fontSize = (IS_PHONE ? 13 : IS_PLAYER ? 22 : 14) + 'px';
+    el.innerHTML = '<div class="fx-text show note"></div>';
+    el.firstChild.textContent = a.text;
+    el.className = 'dicefx show';
+    if (a.fit) fitText(el.firstChild);
+    return;
+  }
   // D100 は十の位と一の位の2個のD10で見せる
   const dice = rs.flatMap(r => r.sides === 100
     ? [{ sides: 10, tens: true, value: Math.floor(r.value % 100 / 10) || 10 }, { sides: 10, ones: true, value: r.value % 10 || 10 }]
@@ -1081,14 +1127,24 @@ function playDice(a) {
     const t = $('.fx-text', el);
     t.textContent = a.text;
     t.className = 'fx-text show ' + (a.cls || '');
+    if (a.fit) fitText(t);
     // クリックするまで出したままにする（何もしなくてよい）
   }, DICE_MS);
 }
 
+// 行の途中で折り返さず、横幅に収まるまで文字を小さくする（成長判定の案内：改行は決めた位置だけにする）
+function fitText(box) {
+  box.style.whiteSpace = 'pre';
+  box.style.maxWidth = 'none';
+  box.style.fontSize = '';
+  const base = parseFloat(getComputedStyle(box).fontSize), max = lay.aw * 0.94;
+  for (let k = 1; box.offsetWidth > max && k > 0.5; k -= 0.05) box.style.fontSize = base * k + 'px';
+}
 // ダイスの表示を消す。tell = ほかの画面にも消すよう伝える（GM・プレイヤー・スマホの誰がクリックしても全員の画面から消える）
 function hideDice(tell) {
   clearTimeout(fx.timer); cancelAnimationFrame(fx.raf);
   $('#diceFx').className = 'dicefx';
+  fx.waiters.splice(0).forEach(go => go()); // 閉じられるのを待っている処理（成長判定の続き）を進める
   if (tell) { if (IS_PLAYER) toGM({ type: 'diceOff' }); else toPlayer({ type: 'diceOff' }); }
 }
 function bindDice() {
@@ -1648,7 +1704,7 @@ function readMaker(text) {
   try { const src = JSON.parse(text), sh = makerSheet(src); return sh ? { sh, src } : null; } catch { return null; }
 }
 // 探索者メーカーの「⑥ 完成」と同じ並び・同じ見た目のシート。
-// opt.all = 初期値のままの技能も出す / opt.roll = 押すと振れる（スマホ）/ opt.edit = 'gm'（成長チェックと技能値の変更）・'pl'（成長チェックだけ）
+// opt.all = 初期値のままの技能も出す / opt.roll = 押すと振れる（スマホ）/ opt.edit = 'gm'（成長チェックと技能値の変更）・'pl'（見るだけ。出力はできる）
 function sheetHTML(sh, opt = {}) {
   const tap = (label, v) => opt.roll && Number.isFinite(+v) && +v > 0 ? ` data-roll="CCB<=${+v} ${esc(label)}" role="button" tabindex="0"` : '';
   const skills = sh.skills.map((s, i) => ({ ...s, i })).filter(s => opt.all || s.t !== s.b || s.o || s.c);
@@ -1657,7 +1713,7 @@ function sheetHTML(sh, opt = {}) {
   const groupOf = s => s.g || (defs.find(d => s.n === d.n || s.n.startsWith(d.n + '（')) || {}).g || 'その他';
   const groups = [...(typeof SKILL_GROUPS === 'undefined' ? [] : SKILL_GROUPS), 'その他'].map(g => [g, skills.filter(s => groupOf(s) === g)]).filter(x => x[1].length);
   const row = s => `<div class="sh-skill ${s.o ? 'occ' : ''}"${tap(s.n, s.t)}>
-      ${opt.edit ? `<input type="checkbox" class="gc" data-gc="${s.i}"${s.c ? ' checked' : ''} title="成長チェック" aria-label="${esc(s.n)} の成長チェック">` : `<span class="gc-mark">${s.c ? '☑' : ''}</span>`}
+      ${opt.edit === 'gm' ? `<input type="checkbox" class="gc" data-gc="${s.i}"${s.c ? ' checked' : ''} title="成長チェック" aria-label="${esc(s.n)} の成長チェック">` : `<span class="gc-mark">${s.c ? '★' : ''}</span>`}
       <span class="n">${esc(s.n)}</span><span class="v"><span class="b">${esc(s.b)}→</span>${opt.edit === 'gm'
         ? `<input type="number" class="gv" data-gv="${s.i}" value="${esc(s.t)}" min="0" max="999" aria-label="${esc(s.n)} の現在値">` : esc(s.t)}</span></div>`;
   return `<div class="sheet">
@@ -1687,15 +1743,20 @@ function sheetHTML(sh, opt = {}) {
     <label class="chk sheet-toggle"><input type="checkbox" data-sheet-all${opt.all ? ' checked' : ''}> 初期値のままの技能も表示する</label>
     ${groups.map(([g, list]) => `<h3 class="sh-group">${esc(g)}技能</h3>
     <div class="sh-skills">${list.map(row).join('')}</div>`).join('')}
-    <p class="sh-legend">◆＝職業技能　☑＝成長チェック　（初期値→現在値）</p>
+    <p class="sh-legend">◆＝職業技能　${opt.edit === 'gm' ? '☑' : '★'}＝成長チェック　（初期値→現在値）</p>
 
-    ${sh.bg.length ? `<h2>バックグラウンド</h2>
+    ${opt.edit === 'gm' && typeof BACKGROUND_FIELDS !== 'undefined' ? `<h2>バックグラウンド</h2>
+    <div class="sh-bg">${BACKGROUND_FIELDS.map(b => `<div><h4>${esc(b.n)}</h4><textarea data-gb="${esc(b.n)}" rows="3" aria-label="${esc(b.n)}">${esc((sh.bg.find(x => x[0] === b.n) || [])[1] || '')}</textarea></div>`).join('')}</div>`
+    : sh.bg.length ? `<h2>バックグラウンド</h2>
     <div class="sh-bg">${sh.bg.map(([n, t]) => `<div><h4>${esc(n)}</h4><p>${esc(t)}</p></div>`).join('')}</div>` : ''}
     ${opt.edit === 'gm' ? `<div class="sheet-actions">
       <button class="btn primary" type="button" data-sheet-commit>保存</button><button class="btn" type="button" data-sheet-cancel>キャンセル</button>
       <span class="hint sheet-dirty"${opt.dirty ? '' : ' hidden'}>保存していない変更があります</span><span class="spacer"></span>
       <button class="btn" type="button" data-sheet-save${opt.dirty ? ' disabled' : ''} title="保存した内容を出力します。変更したあとは先に保存してください">出力</button></div>` : ''}
-    ${opt.edit === 'pl' ? '<div class="sheet-actions"><button class="btn primary" type="button" data-sheet-save>出力</button><span class="hint">成長チェックを含めて書き出せます</span></div>' : ''}
+    ${opt.edit === 'pl' ? `<div class="sheet-actions">
+      <button class="btn primary" type="button" data-sheet-grow${sh.skills.some(s => s.c) ? '' : ' disabled'} title="★の付いた技能で成長判定を振ります">成長判定</button>
+      <button class="btn" type="button" data-sheet-save>出力</button>
+      <span class="hint">${sh.skills.some(s => s.c) ? '★の技能ごとに判定（1D100）と成長（1D10）を振ります。技能名が出たらクリックで判定、成長ならもう一度クリックで成長ダイスを振ります。技能値への反映はGMが行います。' : '★（成長チェック）の付いた技能があると、成長判定を振れます。'}</span></div>` : ''}
   </div>`;
 }
 // GM画面のシートは下書き（draft）を編集し、「保存」を押すまでコマには反映しない
@@ -1728,14 +1789,9 @@ function closeMainDlg() {
   ui.dirty = false; ui.draft = null;
   $('#dlg').close();
 }
-// 成長チェック・技能値の変更。GM画面はそのまま書き換え、スマホはGM画面へ頼む（スマホからは成長チェックだけ）
+// 成長チェック・技能値の変更（GM画面だけ）。下書きを書き換え、「保存」でコマに反映する
 function sheetEdit(key, i, v) {
-  if (IS_PHONE) {
-    const s = state.sheet && state.sheet.skills[i];
-    if (key !== 'c' || !s) return;
-    s.c = v;
-    return toGM({ type: 'check', i, v });
-  }
+  if (IS_PHONE) return; // スマホからは変更できない（成長チェックもGM画面でだけ付ける）
   const s = ui.draft && ui.draft.skills[i];
   if (!s) return;
   s[key] = v;
@@ -1745,10 +1801,22 @@ function sheetEdit(key, i, v) {
     if (d) d[1] = ui.draft.maxSan;
     if (cell) cell.textContent = ui.draft.maxSan;
   }
-  ui.dirty = true; // 画面は作り直さない（入力中のカーソルを保つ）。出力は保存してから
+  markSheetDirty();
+}
+// 下書きに変更があることを示す。画面は作り直さない（入力中のカーソルを保つ）。出力は保存してから
+function markSheetDirty() {
+  ui.dirty = true;
   const out = $('#dlg [data-sheet-save]'), note = $('#dlg .sheet-dirty');
   if (out) out.disabled = true;
   if (note) note.hidden = false;
+}
+// バックグラウンドの各欄の変更（GM画面だけ）。空にした欄はシートから外す
+function sheetBg(name, text) {
+  if (IS_PHONE || !ui.draft) return;
+  const m = new Map(ui.draft.bg), names = [...new Set([...BACKGROUND_FIELDS.map(b => b.n), ...m.keys()])];
+  if (text.trim()) m.set(name, text); else m.delete(name);
+  ui.draft.bg = names.filter(n => m.has(n)).map(n => [n, m.get(n)]);
+  markSheetDirty();
 }
 // 探索者メーカーの「⑥ 完成」と同じ出力（テキスト／ココフォリア駒／JSON）を、いまのシートの内容で作る
 function sheetOutputs(sh, src, status) {
@@ -1791,6 +1859,9 @@ function sheetOutputs(sh, src, status) {
   if (orig && sh.skills.every(s => s.id)) {
     const out = clone(src);
     out.alloc = out.alloc || {};
+    // 書き換えたバックグラウンドも入れる
+    out.bg = out.bg || {};
+    for (const b of BACKGROUND_FIELDS) out.bg[b.k] = (sh.bg.find(x => x[0] === b.n) || [])[1] || '';
     for (const s of sh.skills) {
       const o = orig.skills.find(x => x.id === s.id), diff = o ? s.t - o.t : 0;
       if (!diff) continue;
@@ -1859,6 +1930,7 @@ function bindSheet() {
     if (t.matches('[data-gc]')) sheetEdit('c', +t.dataset.gc, t.checked);
     if (t.matches('[data-gv]')) sheetEdit('t', +t.dataset.gv, clamp(Math.round(num(t.value)), 0, 999));
   });
+  document.addEventListener('input', e => { if (e.target.matches('[data-gb]')) sheetBg(e.target.dataset.gb, e.target.value); });
   document.addEventListener('click', e => {
     if (e.target.closest('[data-sheet-save]')) openSheetExport();
     if (e.target.closest('[data-sheet-commit]')) saveSheet();
@@ -2291,6 +2363,15 @@ function initPhone() {
   });
   $('#phDiceForm').addEventListener('submit', e => { e.preventDefault(); const v = $('#phExpr').value.trim(); if (v) rollNow(v); });
   document.addEventListener('click', e => {
+    const g = e.target.closest('[data-sheet-grow]');
+    if (g && !g.disabled) {
+      const n = ((state.sheet || {}).skills || []).filter(s => s.c).length;
+      if (!gmConn || !gmConn.open) return toast('GM画面につながっていません');
+      if (!confirm(`★の付いた ${n} 個の技能で成長判定を振りますか？\n（結果は全員に見えます。技能値への反映はGMが行います）`)) return;
+      toGM({ type: 'growth' });
+      ph.tab = 'map'; renderPhone(); renderBoard(); // ダイスが見えるようにマップへ
+      return;
+    }
     const r = e.target.closest('input, button, label') ? null : e.target.closest('[data-roll]'); // 成長チェックなどを押したときは振らない
     if (r && confirm(`「${r.dataset.roll.replace(/^CCB<=(\d+) (.*)$/, '$2（$1）')}」で振りますか？`)) rollNow(r.dataset.roll);
   });
