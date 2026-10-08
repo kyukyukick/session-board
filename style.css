@@ -195,7 +195,9 @@ body.player .board { cursor: default; }
 .mw-x { position: absolute; top: 4px; right: 6px; background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 2px 8px; }
 .mw-x:hover { color: var(--text); }
 .mw-rz { position: absolute; left: -6px; top: -6px; width: 16px; height: 16px; background: var(--accent); border-radius: 3px; cursor: nwse-resize; touch-action: none; }
-body.player .mw-rz { display: none; }
+/* スマホのつまみは、上の辺の真ん中に横長で出す（高さだけ変えられる） */
+body.phone .mw-rz { left: 50%; top: -1px; width: 44px; height: 2px; border-radius: 1px; transform: translateX(-50%); cursor: ns-resize; }
+body.phone .mw-rz::after { content: ""; position: absolute; inset: -14px -18px; } /* 見た目は細く、指で押せる範囲は広く */
 body.player .msgwin { bottom: 16px; }
 
 /* ---------- チャット・メモ ---------- */
@@ -496,3 +498,26 @@ body.phone .sh-skill .gc { width: 22px; height: 22px; }
 /* 成長判定：これから振る技能の案内 */
 .fx-text.note { font-size: 1.4em; padding: .8em 1.2em; line-height: 1.7; border-color: var(--accent); }
 body.phone .fx-text.note { font-size: 1.25em; padding: .7em .9em; }
+
+/* チャットの「最新へ戻る」ボタン：一覧の下端に張りつき、上へさかのぼっているときだけ見える */
+.to-bottom { position: sticky; bottom: 8px; height: 0; align-self: flex-end; display: none; z-index: 2; }
+.to-bottom.show { display: block; }
+.to-bottom button {
+  position: absolute; right: 4px; bottom: 0; width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); border: 0; font-size: 18px; font-weight: 700; line-height: 1;
+}
+body.phone .to-bottom button { width: 42px; height: 42px; font-size: 20px; }
+
+/* 画面中央のお知らせ（自分宛ての秘話が届いた） */
+#notice { display: none; }
+#notice.show, #notice:popover-open {
+  display: block; position: fixed; inset: 0; margin: auto; width: fit-content; height: fit-content; max-width: 86vw; z-index: 98;
+  background: var(--accent); color: var(--accent-text); border: 0; border-radius: 14px; padding: 18px 28px;
+  font-size: 20px; font-weight: 700; text-align: center; cursor: pointer; animation: noticeIn .25s ease-out;
+}
+#notice[popover]:not(:popover-open):not(.show) { display: none; }
+@keyframes noticeIn { from { transform: scale(.85); opacity: 0; } }
+body.phone #notice.show, body.phone #notice:popover-open { font-size: 18px; padding: 16px 22px; }
+@media (prefers-reduced-motion: reduce) { #notice { animation: none; } }
+body.player:not(.phone) #notice.show, body.player:not(.phone) #notice:popover-open { font-size: 30px; padding: 26px 44px; } /* 外部モニターでは大きく */
+#notice.talk { background: #fff; color: #1f2328; } /* 雑談の知らせ */

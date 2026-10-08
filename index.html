@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>セッションボード</title>
-<link rel="stylesheet" href="style.css?v=49">
+<link rel="stylesheet" href="style.css?v=56">
 </head>
 <body>
 <div class="app">
@@ -43,7 +43,7 @@
       </div>
       <div class="dicefx" id="diceFx"></div>
       <div class="msgwin" id="msgWin" hidden>
-        <div class="mw-rz" title="ドラッグでウィンドウの大きさを変更／ダブルクリックで元の大きさ"></div>
+        <div class="mw-rz" title="ドラッグでウィンドウの大きさを変更／ダブルクリックで元の大きさ" aria-label="メッセージウィンドウの大きさを変える"></div>
         <div class="mw-img"></div>
         <div class="mw-body"><div class="mw-name"></div><div class="mw-text"></div></div>
         <button class="mw-x" title="閉じる（次の発言でまた表示されます）" aria-label="メッセージウィンドウを閉じる">×</button>
@@ -133,12 +133,13 @@
 <dialog id="dlg"></dialog>
 <dialog id="picker"></dialog>
 <div id="toast" popover="manual" role="status"></div>
+<div id="notice" popover="manual" role="alert"></div>
 <input type="file" id="fileImg" accept="image/*" multiple hidden>
 <input type="file" id="fileAudio" accept="audio/*" multiple hidden>
 <input type="file" id="fileSheet" accept=".json,application/json" hidden>
 <input type="file" id="fileImport" accept=".json,application/json" hidden>
 
 <script src="maker-data.js?v=1"></script>
-<script src="app.js?v=67"></script>
+<script src="app.js?v=75"></script>
 </body>
 </html>

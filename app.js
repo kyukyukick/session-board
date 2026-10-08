@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 65; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 73; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -188,7 +188,7 @@ function syncPhones() {
       const me = info.name && state.chars.find(c => c.name === info.name); // 探索者シートは本人のスマホにだけ送る
       // taken = ほかのスマホが選んでいるコマ（同じ探索者を2人が選ばないようにする）
       const taken = [...phones].filter(([c2, i2]) => c2 !== conn && c2.open && i2.name).map(([, i2]) => i2.name);
-      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, taken, sheet: (me && me.sheet) || null, sheetSrc: (me && me.sheetSrc) || null } }));
+      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, taken, now: Date.now(), sheet: (me && me.sheet) || null, sheetSrc: (me && me.sheetSrc) || null } }));
     });
   }, 200);
 }
@@ -201,6 +201,8 @@ function onPlayerMsg(d) {
     renderBoard(); renderPlayer();
   }
   if (d.type === 'diceOff') hideDice(false);
+  if (d.type === 'notice') centerNotice(String(d.text || ''), d.kind);
+  if (d.type === 'chatScroll' && !IS_PHONE) { pscroll = d; followChatScroll(); }
   if (d.type === 'name') { // GM画面が、選んだコマを受け付けなかった
     ph.name = String(d.name || '');
     try { localStorage.setItem('coc-sb-name-' + ROOM, ph.name); } catch { /* 保存できなくても使える */ }
@@ -344,7 +346,10 @@ function onPhoneData(conn, d) {
     pushMsg(secret ? 'secret' : 'chat', info.name || 'プレイヤー', text, secret ? { to: 'GM' } : {});
     // 見ていないタブへの書き込みは、画面下の通知でも知らせる（タブの赤い印だけだと見落としやすい）
     const who = info.name || 'プレイヤー';
-    if (document.hidden || ui.tab !== (secret ? 'secret' : 'chat')) notify(secret ? `${who} から秘話が届きました` : `${who} が雑談に書き込みました`);
+    // 秘話も雑談も、どのタブを開いていても画面中央に知らせる。雑談はプレイヤー画面（別ウィンドウ）にも出す
+    const note = secret ? `${who} から秘話が届きました` : `${who} が雑談に書き込みました`;
+    notify(note, secret ? 'secret' : 'talk');
+    if (!secret) talkNotice(note, conn); // 雑談は、書いた本人以外の全員（プレイヤー画面・ほかのスマホ）にも知らせる
     commit();
   }
 }
@@ -623,7 +628,15 @@ function renderMsgWin() {
   $('#mwOpen').hidden = !m || mw.closed !== m.id; // × で閉じたあと、開き直すためのボタン
   if (!m) { mw.id = null; mw.closed = null; clearInterval(mw.timer); return; } // オフにしたら × で閉じた状態も解除する
   // 幅は使える横幅に対する割合、高さは文章の行数で持つ（GM画面とプレイヤー画面で文字の大きさが違うため）
-  const w = IS_PHONE ? lay.bw : num(state.view.mwW, 0) ? clamp(num(state.view.mwW), 0.2, 1) * lay.aw : lay.aw * 0.9; // スマホは画面の横幅いっぱい
+  // プレイヤー画面はGM画面の大きさに連動するが、その画面で変えた大きさ（mw.local）があればそれを使う。
+  // GM画面が大きさを変え直したら、またGM画面に合わせる。スマホは自分で決めた高さだけを使う（横幅はいつも画面いっぱい）
+  if (IS_PLAYER && !IS_PHONE) {
+    const sig = `${state.view.mwW}|${state.view.mwLines}`;
+    if (mw.gmSig !== undefined && mw.gmSig !== sig) mw.local = null;
+    mw.gmSig = sig;
+  }
+  const size = IS_PLAYER && mw.local ? mw.local : { w: IS_PHONE ? 0 : state.view.mwW, lines: IS_PHONE ? 3 : state.view.mwLines };
+  const w = IS_PHONE ? lay.bw : num(size.w, 0) ? clamp(num(size.w), 0.2, 1) * lay.aw : lay.aw * 0.9;
   // 文字も画像も使える横幅に比例させ、GM画面とプレイヤー画面で同じ見え方（同じ位置で改行）にする
   // 100% = フルHD（横1920）のプレイヤー画面で 24px。どの画面も横幅に比例させるので、プレイヤー画面のウィンドウの大きさを変えても
   // GM画面の文字は変わらず、プレイヤー画面はウィンドウに合わせて全体が同じ見え方のまま縮む
@@ -637,7 +650,7 @@ function renderMsgWin() {
   if (img._u !== u) { img._u = u; img.style.backgroundImage = u ? `url("${u}")` : ''; }
   $('.mw-name', el).textContent = m.from;
   const text = $('.mw-text', el);
-  text.style.height = clamp(num(state.view.mwLines, 3), 1, 15) * 1.6 + 'em';
+  text.style.height = clamp(num(size.lines, 3), 1, 15) * 1.6 + 'em';
   const show = () => { text.textContent = mw.chars.slice(0, mw.n).join(''); text.scrollTop = text.scrollHeight; };
   if (mw.id !== m.id) {
     mw.id = m.id; mw.chars = [...m.text];
@@ -659,25 +672,33 @@ function bindMsgWin() {
   el.addEventListener('dblclick', e => e.stopPropagation());
   el.addEventListener('pointerdown', e => e.stopPropagation());
   el.addEventListener('wheel', e => e.stopPropagation());
-  if (!IS_PLAYER) {
-    // 左上のつまみをドラッグして大きさを変える（ダブルクリックで元の大きさ）
-    const rz = $('.mw-rz', el), text = $('.mw-text', el);
-    rz.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      rz.setPointerCapture(e.pointerId);
-      const sx = e.clientX, sy = e.clientY, w = el.offsetWidth, h = text.offsetHeight, fs = parseFloat(getComputedStyle(text).fontSize);
-      const move = ev => {
-        state.view.mwW = clamp((w - 2 * (ev.clientX - sx)) / lay.aw, 0.2, 1);
-        state.view.mwLines = clamp((h - (ev.clientY - sy)) / (fs * 1.6), 1, 15);
-        commit(false);
-      };
-      const up = () => { rz.removeEventListener('pointermove', move); rz.removeEventListener('pointerup', up); rz.removeEventListener('pointercancel', up); };
-      rz.addEventListener('pointermove', move);
-      rz.addEventListener('pointerup', up);
-      rz.addEventListener('pointercancel', up);
-    });
-    rz.addEventListener('dblclick', () => { delete state.view.mwW; delete state.view.mwLines; commit(false); });
-  }
+  // つまみをドラッグして大きさを変える（ダブルクリックで元の大きさ）。
+  // GM画面で変えた大きさはプレイヤー画面にも伝わる。プレイヤー画面・スマホで変えた大きさは、その画面だけのもの
+  const rz = $('.mw-rz', el), text = $('.mw-text', el);
+  const KEY = 'coc-sb-mw-' + (ROOM || '');
+  if (IS_PHONE) { try { mw.local = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { /* 保存できなくても使える */ } }
+  const setSize = (wFrac, lines) => {
+    if (!IS_PLAYER) { state.view.mwW = wFrac; state.view.mwLines = lines; return commit(false); }
+    mw.local = { w: wFrac, lines };
+    if (IS_PHONE) { try { localStorage.setItem(KEY, JSON.stringify(mw.local)); } catch { /* 同上 */ } }
+    renderMsgWin();
+  };
+  rz.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    rz.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, w = el.offsetWidth, h = text.offsetHeight, fs = parseFloat(getComputedStyle(text).fontSize);
+    const move = ev => setSize(clamp((w - 2 * (ev.clientX - sx)) / lay.aw, 0.2, 1), clamp((h - (ev.clientY - sy)) / (fs * 1.6), 1, 15));
+    const up = () => { rz.removeEventListener('pointermove', move); rz.removeEventListener('pointerup', up); rz.removeEventListener('pointercancel', up); };
+    rz.addEventListener('pointermove', move);
+    rz.addEventListener('pointerup', up);
+    rz.addEventListener('pointercancel', up);
+  });
+  rz.addEventListener('dblclick', () => {
+    if (!IS_PLAYER) { delete state.view.mwW; delete state.view.mwLines; return commit(false); }
+    mw.local = null;
+    if (IS_PHONE) { try { localStorage.removeItem(KEY); } catch { /* 同上 */ } }
+    renderMsgWin();
+  });
   el.addEventListener('click', e => {
     if (e.target.closest('.mw-rz')) return;
     if (e.target.closest('.mw-x')) { mw.closed = mw.id; renderMsgWin(); return; }
@@ -973,7 +994,7 @@ function renderLeft() {
 /* ---------- チャット・メモ ---------- */
 const hhmm = t => new Date(t).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 function msgHTML(m, gm) {
-  return `<div class="msg${m.sys ? ' sys' : ''}"><div class="mh"><b>${esc(m.from)}</b>${m.to ? `<span class="to">→ ${esc(m.to)}</span>` : ''}${gm && m.gm ? '<span class="tag secret">GMのみ</span>' : ''}
+  return `<div class="msg${m.sys ? ' sys' : ''}" data-mid="${m.id}"><div class="mh"><b>${esc(m.from)}</b>${m.to ? `<span class="to">→ ${esc(m.to)}</span>` : ''}${gm && m.gm ? '<span class="tag secret">GMのみ</span>' : ''}
     <time>${hhmm(m.t)}</time>${gm ? `<button data-act="delMsg" data-id="${m.id}" title="この発言を削除">×</button>` : ''}</div><div class="mt">${esc(m.text)}</div></div>`;
 }
 function pushMsg(tab, from, text, extra = {}) {
@@ -982,6 +1003,20 @@ function pushMsg(tab, from, text, extra = {}) {
 }
 const sysMsg = (text, gm = false) => pushMsg('info', 'システム', text, { sys: true, gm });
 
+// チャットを上へさかのぼっているときだけ出る「↓」ボタン。押すと最新の発言（いちばん下）へ戻る
+function toBottomBtn(log) {
+  const away = () => log.scrollHeight - log.scrollTop - log.clientHeight > 60;
+  let b = $(':scope > .to-bottom', log);
+  if (!b) {
+    b = document.createElement('div');
+    b.className = 'to-bottom';
+    b.innerHTML = '<button type="button" title="最新の発言へ" aria-label="最新の発言へ">↓</button>';
+    b.firstChild.addEventListener('click', () => { log.scrollTop = log.scrollHeight; });
+  }
+  log.append(b); // 中身を作り直したあとも、いちばん後ろに置く
+  if (!log._tb) { log._tb = true; log.addEventListener('scroll', () => { const x = $(':scope > .to-bottom', log); if (x) x.classList.toggle('show', away()); }); }
+  b.classList.toggle('show', away());
+}
 function renderChat() {
   // 雑談と秘話は、見ていない間に新しい発言が入ったらタブに赤い印を付ける（スマホからの書き込みに気づけるように）
   if (!ui.seen) ui.seen = Object.fromEntries(['chat', 'secret'].map(k => [k, Math.max(0, ...state.chat.filter(m => m.tab === k).map(m => m.t))]));
@@ -1007,6 +1042,7 @@ function renderChat() {
   const html = list.map(m => msgHTML(m, true)).join('') || `<div class="empty">${ui.tab === 'secret' ? '特定の相手にだけ伝える内容を記録します。プレイヤー画面には表示されません。' : 'まだ発言がありません'}</div>`;
   if (log._h !== html) { log._h = html; log.innerHTML = html; }
   if (log._sig !== sig) { log._sig = sig; log.scrollTop = log.scrollHeight; }
+  toBottomBtn(log);
 }
 
 async function sendChat() {
@@ -1025,7 +1061,14 @@ async function sendChat() {
     await new Promise(res => setTimeout(res, DICE_MS + 300));
   }
   pushMsg(tab, from, text, extra);
+  if (tab === 'chat') talkNotice(`${from} が雑談に書き込みました`); // GMが雑談に書いたときも、プレイヤー画面とスマホに知らせる
   commit();
+}
+// 雑談への書き込みを、プレイヤー画面（別ウィンドウ）とスマホに知らせる。except = 書いた本人のスマホ
+function talkNotice(text, except) {
+  const msg = { coc: 1, type: 'notice', kind: 'talk', text: publicMask()(text) };
+  toWindow(msg);
+  phones.forEach((_, conn) => { if (conn !== except && conn.open) conn.send(msg); });
 }
 
 /* ---------- ダイス ---------- */
@@ -1549,12 +1592,25 @@ function toast(msg, ms = 2400) {
   toastTimer = setTimeout(() => { t.classList.remove('show'); if (t.hidePopover) { try { t.hidePopover(); } catch { /* 同上 */ } } }, ms);
 }
 // スマホからの書き込みの通知。GM画面が裏に回っている間に届いた分は、画面に戻ったときに出し直す
-let missed = '';
-function notify(msg) {
-  toast(msg, 5000);
-  if (document.hidden) missed = msg;
+let missed = null;
+function notify(msg, center) { // center = 'secret'（自分宛ての秘話）か 'talk'（雑談）のとき、画面の中央に大きく出す
+  if (center) centerNotice(msg, center); else toast(msg, 5000);
+  if (document.hidden) missed = [msg, center];
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { toast(missed, 5000); missed = ''; } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { notify(...missed); missed = null; } });
+// 画面中央のお知らせ（自分宛ての秘話が届いたとき）。数秒で消える。クリックでも消える
+let noticeTimer = 0;
+function centerNotice(msg, kind) {
+  const n = $('#notice');
+  n.textContent = msg;
+  n.classList.toggle('talk', kind === 'talk'); // 雑談の知らせは白、秘話は緑
+  if (n.showPopover) { try { n.hidePopover(); } catch { /* まだ出ていない */ } try { n.showPopover(); } catch { /* 非対応なら通常表示 */ } }
+  n.classList.add('show');
+  clearTimeout(noticeTimer);
+  const close = () => { n.classList.remove('show'); if (n.hidePopover) { try { n.hidePopover(); } catch { /* 同上 */ } } };
+  n.onclick = close;
+  noticeTimer = setTimeout(close, 4500);
+}
 
 /* ---------- BGM ---------- */
 const audio = new Audio();
@@ -2214,6 +2270,20 @@ function bindEvents() {
   document.addEventListener('change', e => { if (e.target.matches('[data-sheet-all]')) { ui.sheetAll = e.target.checked; refreshDlg(); } });
   $('#fileImport').addEventListener('change', e => { if (e.target.files[0]) importRoom(e.target.files[0]); e.target.value = ''; });
 
+  // チャットをスクロールしたら、プレイヤー画面（別ウィンドウ）のチャットも同じ位置に動かす。スマホには送らない
+  let scrollSent = 0;
+  $('#chatLog').addEventListener('scroll', () => {
+    cancelAnimationFrame(scrollSent);
+    scrollSent = requestAnimationFrame(() => {
+      if (ui.tab === 'secret' || ui.tab === 'memo') return;
+      const log = $('#chatLog'), top = log.getBoundingClientRect().top;
+      const bottom = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
+      // いちばん上に見えている発言のうち、プレイヤーにも見えるもの（GMのみの記録は飛ばす）
+      const pub = new Set(state.chat.filter(m => !m.gm).map(m => m.id));
+      const first = $$('.msg', log).find(el => el.getBoundingClientRect().bottom > top + 2 && pub.has(el.dataset.mid));
+      toWindow({ type: 'chatScroll', bottom, id: first ? first.dataset.mid : null });
+    });
+  });
   $('#chatForm').addEventListener('submit', e => { e.preventDefault(); sendChat(); });
   $('#chatText').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); } });
   $('#diceForm').addEventListener('submit', e => { e.preventDefault(); if ($('#diceExpr').value.trim()) doRoll($('#diceExpr').value); });
@@ -2246,8 +2316,16 @@ function renderPlayer() {
   const list = s.chat.filter(m => m.tab === s.view.ptab);
   setHTML(pc, `<div class="pbox"><nav class="tabs">${CHAT_TABS.slice(0, 3).map(([k, t]) => `<button class="${s.view.ptab === k ? 'on' : ''}">${t}</button>`).join('')}</nav>
     <div class="chat-log">${list.map(m => msgHTML(m, false)).join('') || '<div class="empty">まだ発言がありません</div>'}</div></div>`);
-  const log = $('.chat-log', pc);
-  log.scrollTop = log.scrollHeight;
+  followChatScroll();
+}
+// プレイヤー画面のチャットを、GM画面で見ている位置に合わせる（pscroll = GM画面でいちばん上に見えている発言。なければ最新）
+let pscroll = null;
+function followChatScroll() {
+  const log = $('#pChat .chat-log');
+  if (!log) return;
+  const el = pscroll && !pscroll.bottom && pscroll.id ? $(`[data-mid="${pscroll.id}"]`, log) : null;
+  if (el) log.scrollTop += el.getBoundingClientRect().top - log.getBoundingClientRect().top;
+  else log.scrollTop = log.scrollHeight;
 }
 
 function initPlayer() {
@@ -2291,6 +2369,13 @@ function renderPhone() {
 
   // まだ見ていない発言があるタブに印を付ける
   const count = { chat: s.chat.length ? s.chat[s.chat.length - 1].t : 0, secret: whispers.length ? whispers[whispers.length - 1].t : 0 };
+  // 自分宛ての秘話が新しく届いたら、画面の中央にも知らせる
+  const toMe = whispers.filter(m => m.to === ph.name), newest = toMe.length ? toMe[toMe.length - 1] : null;
+  if (newest && newest.t > (ph.whisperT || 0)) {
+    ph.whisperT = newest.t;
+    // 届いたばかりのものだけ知らせる（開いた直後やコマを選び直した直後に、昔の秘話で知らせないように）。s.now = GM画面の時計
+    if (s.now && s.now - newest.t < 10000) centerNotice(`${newest.from} から秘話が届きました`); // 秘話を開いている最中でも出す
+  }
   // 秘話はチャットの中のタブ。見ているほう（秘話か、それ以外）を既読にする
   const inSecret = ph.chat === 'secret';
   if (ph.tab === 'chat') ph.seen[inSecret ? 'secret' : 'chat'] = count[inSecret ? 'secret' : 'chat'];
@@ -2328,7 +2413,7 @@ function renderPhone() {
   if (body._h !== html) {
     body._h = html; body.innerHTML = html;
     const log = $('.chat-log', body);
-    if (log) log.scrollTop = log.scrollHeight;
+    if (log) { log.scrollTop = log.scrollHeight; toBottomBtn(log); }
   }
 }
 function initPhone() {
