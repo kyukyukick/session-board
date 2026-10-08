@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 73; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 74; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -142,7 +142,7 @@ function toPhones(msg) { phones.forEach((_, conn) => { if (conn.open) conn.send(
 function toPlayer(msg) { toWindow(msg); toPhones(msg); }
 function toGM(msg) {
   const m = { coc: 1, ver: APP_VER, bw: lay.bw, ...msg };
-  if (IS_PHONE) { if (gmConn && gmConn.open) gmConn.send(m); } else if (HOST) HOST.postMessage(m, ORIGIN);
+  if (IS_PHONE) { m.dev = ph.dev; if (gmConn && gmConn.open) gmConn.send(m); } // dev = このスマホの目印（つなぎ直したとき、GM画面が前の接続を片付けるのに使う） else if (HOST) HOST.postMessage(m, ORIGIN);
 }
 
 // プレイヤー画面へ渡すのは公開情報だけ
@@ -286,8 +286,8 @@ function startPhoneHost() {
     const peer = host.peer = new Peer(peerId(state.roomCode));
     peer.on('open', () => { host.status = ''; renderPhoneStatus(); });
     peer.on('connection', conn => {
-      phones.set(conn, { name: '' });
-      const drop = () => { phones.delete(conn); renderPhoneStatus(); };
+      phones.set(conn, { name: '', born: Date.now() });
+      const drop = () => { phones.delete(conn); renderPhoneStatus(); syncPhones(); };
       conn.on('open', renderPhoneStatus);
       conn.on('close', drop);
       conn.on('error', drop);
@@ -311,10 +311,29 @@ function stopPhoneHost(keepStatus) {
   if (!keepStatus) host.status = '';
   renderPhoneStatus();
 }
+// スマホの接続を片付ける（切れたのに残っている接続・同じスマホの前の接続）
+function dropPhone(conn) {
+  if (!phones.delete(conn)) return;
+  try { conn.close(); } catch { /* すでに切れている */ }
+  renderPhoneStatus();
+  syncPhones(); // ほかのスマホの「選べるコマ」を更新する
+}
+// 合図が20秒以上届かない接続は、切れたものとして片付ける（スマホは5秒おきに合図を送る）
+setInterval(() => {
+  if (IS_PLAYER) return;
+  const now = Date.now();
+  [...phones].forEach(([conn, info]) => { if (!info.preview && now - (info.seen || info.born || now) > 20000) dropPhone(conn); });
+}, 5000);
 function onPhoneData(conn, d) {
   const info = phones.get(conn);
   if (!info || !d || d.coc !== 1) return;
   if (d.ver !== APP_VER) return conn.send({ coc: 1, type: 'reload', ver: APP_VER });
+  info.seen = Date.now(); // 最後に合図が届いた時刻（届かなくなった接続は片付ける）
+  if (d.type === 'ping') return conn.send({ coc: 1, type: 'pong' });
+  if (d.dev && !info.preview) { // 同じスマホがつなぎ直してきたら、残っている前の接続を片付ける（選んでいたコマが取られたままにならないように）
+    info.dev = String(d.dev).slice(0, 40);
+    [...phones].forEach(([c2, i2]) => { if (c2 !== conn && !i2.preview && i2.dev === info.dev) dropPhone(c2); });
+  }
   if (d.type === 'hello') {
     // 選べるのは、公開されているプレイヤーのコマで、ほかのスマホがまだ選んでいないものだけ
     const want = String(d.name || '').slice(0, 80);
@@ -2474,8 +2493,27 @@ function initPhone() {
     if (t || c) { renderPhone(); renderBoard(); }
   });
   bindPhoneBoard();
+  // このスマホの目印。つなぎ直しても同じ値を使う
+  try { ph.dev = localStorage.getItem('coc-sb-dev') || uid() + uid(); localStorage.setItem('coc-sb-dev', ph.dev); } catch { ph.dev = uid() + uid(); }
   renderPhone();
   connectPhone();
+  watchPhoneLink();
+}
+// 接続の見張り。スマホを放置して画面が消えると、接続は切れているのにどちらの側も気づかないことがある。
+// 数秒おきに合図（ping）を送り、GM画面から返事（pong）が来なくなったらつなぎ直す。画面に戻ってきたときもすぐ確かめる
+function watchPhoneLink() {
+  if (IS_PREVIEW) return;
+  const dead = ms => !!ph.peer && !!gmConn && gmConn.open && Date.now() - (ph.rx || 0) > ms;
+  setInterval(() => {
+    if (document.hidden) return;
+    if (dead(16000)) return ph.again('接続が切れました。つなぎ直しています…', true);
+    toGM({ type: 'ping' });
+  }, 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (dead(9000)) return ph.again('接続を確かめています…', true); // しばらく離れていた：前の接続は当てにせず、つなぎ直す
+    toGM({ type: 'ping' });
+  });
 }
 // 指1本でマップを動かし、2本でつまんで拡大縮小する。ダブルタップで全体表示に戻す
 function bindPhoneBoard() {
@@ -2577,25 +2615,27 @@ function bindPhoneMemo() {
   });
   show();
 }
-function connectPhone() {  clearTimeout(ph.retry);
+function connectPhone() {
+  clearTimeout(ph.retry);
   if (IS_PREVIEW) { // プレビューはGM画面と直接やりとりする
     gmConn = { open: true, send: m => window.parent.postMessage(m, ORIGIN) };
     Object.assign(ph, { ok: true, ready: true, status: 'プレビュー' });
     toGM({ type: 'hello', name: ph.name });
     return renderPhone();
   }
-  const again = msg => { // つながらない・切れたときは数秒おきにやり直す
+  const again = (msg, soon) => { // つながらない・切れたときは数秒おきにやり直す（soon = すぐにやり直す）
     ph.ok = false; ph.status = msg; renderPhone();
     if (ph.peer) { const p = ph.peer; ph.peer = null; gmConn = null; p.destroy(); }
     clearTimeout(ph.retry);
-    ph.retry = setTimeout(connectPhone, 4000);
+    ph.retry = setTimeout(connectPhone, soon ? 300 : 4000);
   };
+  ph.again = again;
   loadLib('peer').then(() => {
     const peer = ph.peer = new Peer();
     peer.on('open', () => {
       const conn = gmConn = peer.connect(peerId(ROOM), { reliable: true });
-      conn.on('open', () => { ph.ok = true; ph.status = '接続中'; ph.ready = true; toGM({ type: 'hello', name: ph.name }); renderPhone(); });
-      conn.on('data', d => { if (d && d.coc === 1) onPlayerMsg(d); });
+      conn.on('open', () => { ph.ok = true; ph.status = '接続中'; ph.ready = true; ph.rx = Date.now(); toGM({ type: 'hello', name: ph.name }); renderPhone(); });
+      conn.on('data', d => { ph.rx = Date.now(); if (d && d.coc === 1) onPlayerMsg(d); });
       conn.on('close', () => { if (ph.peer === peer) again('GM画面との接続が切れました。つなぎ直しています…'); });
       conn.on('error', () => { if (ph.peer === peer) again('GM画面につながりません。つなぎ直しています…'); });
     });
