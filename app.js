@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 74; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 75; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -1721,8 +1721,11 @@ function importCcfolia(text) {
 // 計算方法は探索者メーカー（app.js）と同じ。職業・技能の定義は maker-data.js（探索者メーカーの data.js）を使う
 function makerSheet(ms) {
   if (!ms || typeof ms !== 'object' || !ms.stats || !ms.profile || typeof ERAS === 'undefined' || !ERAS[ms.era]) return null;
-  if (!STATS.every(s => Number.isFinite(ms.stats[s.k]))) return null; // 能力値が未決定
-  const st = k => ms.stats[k] ?? 0;
+  // NPCなどで一部の能力値が決まっていないデータも取り込む（決まっていない値は「—」で出し、計算では0として扱う）
+  const known = (...ks) => ks.every(k => Number.isFinite(ms.stats[k]));
+  if (!STATS.some(s => known(s.k))) return null; // 能力値が1つも決まっていない
+  const st = k => known(k) ? ms.stats[k] : 0;
+  const full = Object.fromEntries(STATS.map(s => [s.k, st(s.k)])), NA = '—';
   const MAP = Object.fromEntries(SKILLS.map(d => [d.k, d])), ORDER = Object.fromEntries(SKILLS.map((d, i) => [d.k, i]));
   const eraOk = def => !!def && (!def.eras || def.eras.includes(ms.era));
   const specDefaults = def => def.def[ms.era] || def.def.all || [''];
@@ -1746,7 +1749,7 @@ function makerSheet(ms) {
   rows.sort((a, b) => ORDER[a.k] - ORDER[b.k]);
   const has = id => rows.some(r => r.id === id);
 
-  const base = r => typeof r.def.base === 'function' ? r.def.base(ms.stats) : r.def.base;
+  const base = r => typeof r.def.base === 'function' ? r.def.base(full) : r.def.base;
   const total = r => { const a = (ms.alloc || {})[r.id] || {}; return base(r) + (a.o || 0) + (a.i || 0); };
   const name = r => { const sp = r.def.spec ? (ms.specs || {})[r.id] ?? r.preset : ''; return sp ? `${r.def.n}（${sp}）` : r.def.n; };
   // 職業技能
@@ -1766,11 +1769,12 @@ function makerSheet(ms) {
     occ: ms.occ === 'custom' ? (ms.custom && ms.custom.name) || 'オリジナル職業' : occ ? occ.name : '',
     occDesc: ms.occ === 'custom' ? (ms.custom && ms.custom.desc) || '' : occ ? occ.desc || '' : '',
     era: ERAS[ms.era].label,
-    stats: STATS.map(s => [s.k, st(s.k)]),
-    derived: [['SAN', san], ['最大SAN', maxSan], ['幸運', st('POW') * 5], ['アイデア', st('INT') * 5], ['知識', Math.min(99, st('EDU') * 5)], ['HP', hp], ['MP', st('POW')], ['DB', db]],
+    stats: STATS.map(s => [s.k, known(s.k) ? st(s.k) : NA]),
+    derived: [['SAN', known('POW') ? san : NA], ['最大SAN', maxSan], ['幸運', known('POW') ? st('POW') * 5 : NA], ['アイデア', known('INT') ? st('INT') * 5 : NA],
+      ['知識', known('EDU') ? Math.min(99, st('EDU') * 5) : NA], ['HP', known('CON', 'SIZ') ? hp : NA], ['MP', known('POW') ? st('POW') : NA], ['DB', known('STR', 'SIZ') ? db : NA]],
     skills: rows.map(r => ({ id: r.id, n: name(r), b: base(r), t: total(r), o: occSet.has(r.id), g: r.def.g })),
     bg: BACKGROUND_FIELDS.filter(b => str((ms.bg || {})[b.k]).trim()).map(b => [b.n, str(ms.bg[b.k])]),
-    dex: st('DEX'), hp, mp: st('POW'), san, maxSan,
+    dex: known('DEX') ? st('DEX') : 10, hp: known('CON', 'SIZ') ? hp : 10, mp: known('POW') ? st('POW') : 10, san: known('POW') ? Math.min(san, maxSan) : 50, maxSan,
   };
 }
 // 貼り付けられた文字列が探索者メーカーのJSONなら { sh: シート, src: 元のデータ } を返す。
@@ -1921,10 +1925,10 @@ function sheetOutputs(sh, src, status) {
         ...shown.filter(s => s.t > 0).map(s => `CCB<=${s.t} 【${s.n}】`),
         `1d3+${db === '0' ? '0' : db.replace('+', '')} 【ダメージ判定（こぶし）】`.replace('+-', '-'),
         ...sh.stats.map(([k, v]) => `CCB<=${v}*5 【${k}×5】`),
-      ].join('\n'),
+      ].filter(c => !c.includes('—')).join('\n'), // 決まっていない能力値を使うコマンドは出さない
       // いまのHP・MP・SAN（セッションで減った値）があればそれを使う
       status: status && status.length ? status.filter(x => x.label).map(x => ({ label: x.label, value: num(x.value), max: x.max === '' || x.max == null ? num(x.value) : num(x.max) }))
-        : [{ label: 'HP', value: d.HP, max: d.HP }, { label: 'MP', value: d.MP, max: d.MP }, { label: 'SAN', value: d.SAN, max: d['最大SAN'] }],
+        : [{ label: 'HP', value: sh.hp, max: sh.hp }, { label: 'MP', value: sh.mp, max: sh.mp }, { label: 'SAN', value: sh.san, max: sh.maxSan }],
       params: [...sh.stats.map(([k, v]) => ({ label: k, value: String(v) })), { label: 'DB', value: db }],
     },
   });
@@ -2124,7 +2128,7 @@ const A = {
     }
     const c = sh ? newChar({
       name: sh.name || '探索者', init: sh.dex, sheet: sh, sheetSrc: mk.src,
-      kind: 'pc', // 探索者メーカーから取り込んだコマはプレイヤー用。公開設定はほかのコマと同じく伏せた状態から
+      kind: /^npc$/i.test(sh.player.trim()) ? 'npc' : 'pc', // 探索者メーカーから取り込んだコマはプレイヤー用（PL欄が「NPC」ならNPC）。公開設定はほかのコマと同じく伏せた状態から
       status: [{ label: 'HP', value: sh.hp, max: sh.hp }, { label: 'MP', value: sh.mp, max: sh.mp }, { label: 'SAN', value: sh.san, max: sh.maxSan }],
     }) : importCcfolia(text);
     if (!c) return toast('駒データとして読み取れませんでした');
