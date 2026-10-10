@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 75; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 76; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -1721,9 +1721,9 @@ function importCcfolia(text) {
 // 計算方法は探索者メーカー（app.js）と同じ。職業・技能の定義は maker-data.js（探索者メーカーの data.js）を使う
 function makerSheet(ms) {
   if (!ms || typeof ms !== 'object' || !ms.stats || !ms.profile || typeof ERAS === 'undefined' || !ERAS[ms.era]) return null;
-  // NPCなどで一部の能力値が決まっていないデータも取り込む（決まっていない値は「—」で出し、計算では0として扱う）
+  // NPCなどで能力値が決まっていない（一部だけ・まったくない）データも取り込む。決まっていない値は「—」で出し、計算では0として扱う
+  if (typeof ms.stats !== 'object' || typeof ms.profile !== 'object') return null;
   const known = (...ks) => ks.every(k => Number.isFinite(ms.stats[k]));
-  if (!STATS.some(s => known(s.k))) return null; // 能力値が1つも決まっていない
   const st = k => known(k) ? ms.stats[k] : 0;
   const full = Object.fromEntries(STATS.map(s => [s.k, st(s.k)])), NA = '—';
   const MAP = Object.fromEntries(SKILLS.map(d => [d.k, d])), ORDER = Object.fromEntries(SKILLS.map((d, i) => [d.k, i]));
