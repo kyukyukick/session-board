@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>セッションボード</title>
-<link rel="stylesheet" href="style.css?v=56">
+<link rel="stylesheet" href="style.css?v=61">
 </head>
 <body>
 <div class="app">
@@ -16,6 +16,7 @@
     <button class="btn" data-act="exportRoom" title="ルーム全体（画像・音源込み）をファイルに保存します">書き出し</button>
     <button class="btn" data-act="importRoom" title="書き出したファイルからルームを復元します">読み込み</button>
     <button class="btn danger" data-act="resetRoom">リセット</button>
+    <button class="btn" data-act="consult" title="いまの状況とチャットをまとめてコピーします。Claudeのチャットに貼り付けて、進行の相談に使えます">Claudeに相談</button>
     <button class="btn" data-act="phoneDlg" id="phoneBtn" title="プレイヤーが自分のスマホでマップやステータス、秘話を見られるようにします">スマホ</button>
     <button class="btn primary" data-act="openPlayer" title="プレイヤーに見せる画面を別ウィンドウで開きます。外部モニターへ移動して全画面にしてください">プレイヤー画面を開く</button>
   </header>
@@ -78,6 +79,7 @@
         <div class="dice-head">
           <b>ダイス</b><span class="tag on" id="diceEngine" title="BCDice（クトゥルフ神話TRPG）で振ります。つながらないときは内蔵のダイスに切り替わります">BCDice</span>
           <select id="diceWho" aria-label="ダイスを振る人" title="ダイスを振る人"></select>
+          <button class="btn sm on" type="button" id="diceSecret" data-act="toggleDiceSecret" title="押すたびに公開／非公開が切り替わります。非公開のときは、振った結果がGM画面にだけ出ます（プレイヤー画面・スマホ・チャットには出ません）">公開</button>
           <label>目標値 <input type="number" id="diceTarget" min="1" max="100" placeholder="なし" title="入れると 1D100 ボタンが「1D100<=目標値」の判定になります"></label>
         </div>
         <div class="dice-btns" id="diceBtns"></div>
@@ -140,6 +142,6 @@
 <input type="file" id="fileImport" accept=".json,application/json" hidden>
 
 <script src="maker-data.js?v=1"></script>
-<script src="app.js?v=78"></script>
+<script src="app.js?v=91"></script>
 </body>
 </html>

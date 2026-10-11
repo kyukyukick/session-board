@@ -12,7 +12,7 @@ const ROOM = new URLSearchParams(location.search).get('room'); // スマホで�
 const IS_PHONE = !!ROOM;
 const IS_PREVIEW = IS_PHONE && new URLSearchParams(location.search).has('local') && window.parent !== window; // GM画面に埋め込んだスマホ画面のプレビュー
 const IS_PLAYER = location.hash === '#player' || IS_PHONE; // 見るだけの画面（別ウィンドウ・スマホ）
-const APP_VER = 76; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
+const APP_VER = 88; // 画面を作り替えたら上げる。古いままのプレイヤー画面を自動で読み直させるため
 const CELL = 50; // 前景1マスの論理サイズ(px)
 const CHAT_TABS = [['main', 'メイン'], ['info', '情報'], ['chat', '雑談'], ['secret', '秘話']];
 const LEFT_TABS = [['chars', 'コマ'], ['scenes', 'シーン'], ['board', '盤面'], ['bgm', 'BGM']];
@@ -142,7 +142,9 @@ function toPhones(msg) { phones.forEach((_, conn) => { if (conn.open) conn.send(
 function toPlayer(msg) { toWindow(msg); toPhones(msg); }
 function toGM(msg) {
   const m = { coc: 1, ver: APP_VER, bw: lay.bw, ...msg };
-  if (IS_PHONE) { m.dev = ph.dev; if (gmConn && gmConn.open) gmConn.send(m); } // dev = このスマホの目印（つなぎ直したとき、GM画面が前の接続を片付けるのに使う） else if (HOST) HOST.postMessage(m, ORIGIN);
+  // dev = このスマホの目印（つなぎ直したとき、GM画面が前の接続を片付けるのに使う）
+  if (IS_PHONE) { m.dev = ph.dev; if (gmConn && gmConn.open) gmConn.send(m); }
+  else if (HOST) HOST.postMessage(m, ORIGIN);
 }
 
 // プレイヤー画面へ渡すのは公開情報だけ
@@ -161,7 +163,8 @@ function publicState() {
     chars,
     markers: s.markers.filter(m => !m.hidden),
     fg: s.fg, bg: s.bg,
-    chat: s.view.chat ? s.chat.filter(m => m.tab !== 'secret' && !m.gm).slice(-200).map(m => ({ ...m, from: mask(m.from), text: mask(m.text) })) : [],
+    // タブごとに新しい300件まで送る（ひとつのタブが多くても、ほかのタブの過去の発言が押し出されないように）
+    chat: s.view.chat ? ['main', 'info', 'chat'].flatMap(tab => s.chat.filter(m => m.tab === tab && !m.gm).slice(-300)).sort((a, b) => a.t - b.t).map(m => ({ ...m, from: mask(m.from), text: mask(m.text) })) : [],
     memo: { pub: s.view.memo ? s.memo.pub : '' },
     turn: { id: chars.some(c => c.id === s.turn.id) ? s.turn.id : null, round: s.turn.round },
     view: s.view,
@@ -188,7 +191,7 @@ function syncPhones() {
       const me = info.name && state.chars.find(c => c.name === info.name); // 探索者シートは本人のスマホにだけ送る
       // taken = ほかのスマホが選んでいるコマ（同じ探索者を2人が選ばないようにする）
       const taken = [...phones].filter(([c2, i2]) => c2 !== conn && c2.open && i2.name).map(([, i2]) => i2.name);
-      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, taken, now: Date.now(), sheet: (me && me.sheet) || null, sheetSrc: (me && me.sheetSrc) || null } }));
+      conn.send(clone({ coc: 1, type: 'state', state: { ...pub, whispers, taken, now: Date.now(), sheet: (me && me.sheet) || null, sheetSrc: (me && me.sheetSrc) || null, myStatus: (me && me.status) || null } }));
     });
   }, 200);
 }
@@ -362,13 +365,12 @@ function onPhoneData(conn, d) {
     const secret = d.tab === 'secret'; // 秘話はGM宛て。コマを選んでいないスマホからは受け付けない
     if (!text || now - (info.last || 0) < 700 || (secret && !info.name)) return;
     info.last = now;
-    pushMsg(secret ? 'secret' : 'chat', info.name || 'プレイヤー', text, secret ? { to: 'GM' } : {});
+    if (!secret) clearDice(); // スマホからの雑談でも片付ける（秘話はほかの人に見えないので片付けない）
+    pushMsg(secret ? 'secret' : 'chat', info.name || 'プレイヤー', text, secret ? { to: 'GM' } : { mw: true }); // スマホからの雑談もメッセージウィンドウに流す
     // 見ていないタブへの書き込みは、画面下の通知でも知らせる（タブの赤い印だけだと見落としやすい）
     const who = info.name || 'プレイヤー';
-    // 秘話も雑談も、どのタブを開いていても画面中央に知らせる。雑談はプレイヤー画面（別ウィンドウ）にも出す
-    const note = secret ? `${who} から秘話が届きました` : `${who} が雑談に書き込みました`;
-    notify(note, secret ? 'secret' : 'talk');
-    if (!secret) talkNotice(note, conn); // 雑談は、書いた本人以外の全員（プレイヤー画面・ほかのスマホ）にも知らせる
+    // 秘話は、どのタブを開いていても画面中央に知らせる。雑談はメッセージウィンドウが点滅して知らせる（中央の表示はしない）
+    if (secret) notify(`${who} から秘話が届きました`, 'secret');
     commit();
   }
 }
@@ -625,8 +627,9 @@ function setZoom(z, cx, cy) {
 }
 
 /* ---------- メッセージウィンドウ ---------- */
-// メインタブの最新の発言を、盤面の下にノベルゲーム風に流す
+// 雑談に直接入力して送った最新の発言を、盤面の下にノベルゲーム風に流す
 const mw = { id: null, chars: [], n: 0, timer: 0, closed: null };
+const MW_BOOT = Date.now(); // この画面を開いた時刻
 const MW_FONT = 24; // 文字サイズ100%のときの、プレイヤー画面での大きさ(px)
 let playerBw = 0;  // プレイヤー画面の横幅（プレイヤー画面から届く）
 const MW_SPEEDS = [[90, 'ゆっくり'], [40, 'ふつう'], [15, 'はやい'], [0, '一瞬']]; // 1文字あたりのミリ秒
@@ -634,9 +637,9 @@ const mwSpeedOf = () => { const v = num(state.view.mwSpeed, 40); return MW_SPEED
 function latestMsg() {
   for (let i = state.chat.length - 1; i >= 0; i--) {
     const m = state.chat[i];
-    if (m.tab !== 'main' || m.gm) continue;
+    if (m.tab !== 'chat' || m.gm || !m.mw) continue; // mw = 雑談に直接入力して送った発言（ダイスの結果などは流さない）
     const c = state.chars.find(x => x.name === m.from && !x.hidden);
-    return { id: m.id, from: m.from, text: m.text, t: m.t, img: c && !c.secretName ? c.img : null };
+    return { id: m.id, from: m.from, text: m.text, t: m.t, tab: m.tab, img: c && !c.secretName ? c.img : null };
   }
   return null;
 }
@@ -676,6 +679,13 @@ function renderMsgWin() {
     clearInterval(mw.timer);
     // 届いたばかりの発言だけ文字送りする（読み込み直後に昔の発言が流れ直さないように）
     mw.n = Date.now() - m.t < 5000 ? 0 : mw.chars.length;
+    // 新しい書き込みが届いたら、ウィンドウを点滅させて知らせる
+    // （画面を開いてから数秒たっていれば新着とみなす。スマホとGM画面で時計がずれていても点滅するように）
+    if (Date.now() - m.t < 5000 || Date.now() - MW_BOOT > 4000) {
+      el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+      clearTimeout(mw.flashT);
+      mw.flashT = setTimeout(() => el.classList.remove('flash'), 1700); // 見えていない間に届いた分が、あとで点滅しないように必ず外す
+    }
     const ms = mwSpeedOf();
     if (!ms) mw.n = mw.chars.length;
     if (mw.n < mw.chars.length) mw.timer = setInterval(() => { mw.n++; show(); if (mw.n >= mw.chars.length) clearInterval(mw.timer); }, ms);
@@ -688,6 +698,8 @@ function bindMsgWin() {
   reopen.addEventListener('pointerdown', e => e.stopPropagation());
   reopen.addEventListener('dblclick', e => e.stopPropagation());
   reopen.addEventListener('click', () => { mw.closed = null; renderMsgWin(); });
+  // 点滅が終わったら印を外す（外さないと、スマホで別のタブからマップへ戻るたびに点滅がやり直されてしまう）
+  el.addEventListener('animationend', e => { if (e.animationName === 'mwFlash') el.classList.remove('flash'); });
   el.addEventListener('dblclick', e => e.stopPropagation());
   el.addEventListener('pointerdown', e => e.stopPropagation());
   el.addEventListener('wheel', e => e.stopPropagation());
@@ -964,7 +976,7 @@ const LEFT = {
       <h4>プレイヤー画面に表示するもの</h4>
       ${chk('view.init', '行動順とステータス', s.view.init)}
       ${chk('view.chat', 'チャット（メイン・情報・雑談）', s.view.chat)}
-      ${chk('view.msgwin', 'メッセージウィンドウ（メインの最新の発言）', s.view.msgwin)}
+      ${chk('view.msgwin', 'メッセージウィンドウ（雑談に入力した発言）', s.view.msgwin)}
       ${chk('view.memo', '公開メモ', s.view.memo)}
       <div class="hint">秘匿にしたコマ・マーカー、秘話、GMメモはプレイヤー画面には送られません。</div>
       <h4>メッセージウィンドウ</h4>
@@ -1013,14 +1025,15 @@ function renderLeft() {
 /* ---------- チャット・メモ ---------- */
 const hhmm = t => new Date(t).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 function msgHTML(m, gm) {
-  return `<div class="msg${m.sys ? ' sys' : ''}" data-mid="${m.id}"><div class="mh"><b>${esc(m.from)}</b>${m.to ? `<span class="to">→ ${esc(m.to)}</span>` : ''}${gm && m.gm ? '<span class="tag secret">GMのみ</span>' : ''}
+  return `<div class="msg${m.sys ? ' sys' : ''}" data-mid="${m.id}"><div class="mh"><b>${esc(m.from)}</b>${m.to ? `<span class="to">→ ${esc(m.to)}</span>` : ''}${gm && m.gm && m.tab !== 'log' ? '<span class="tag secret">GMのみ</span>' : ''}
     <time>${hhmm(m.t)}</time>${gm ? `<button data-act="delMsg" data-id="${m.id}" title="この発言を削除">×</button>` : ''}</div><div class="mt">${esc(m.text)}</div></div>`;
 }
 function pushMsg(tab, from, text, extra = {}) {
   state.chat.push({ id: uid(), tab, from, text, t: Date.now(), ...extra });
   if (state.chat.length > 1000) state.chat.splice(0, state.chat.length - 1000);
 }
-const sysMsg = (text, gm = false) => pushMsg('info', 'システム', text, { sys: true, gm });
+// 手番・ステータス変更・シーン切り替えなどの自動の記録は、GM画面だけの「記録」タブに入れる（情報タブは手紙や手記などGMが書いたものだけにする）
+const sysMsg = (text, gm = false) => pushMsg('log', 'システム', text, { sys: true, gm: true });
 
 // チャットを上へさかのぼっているときだけ出る「↓」ボタン。押すと最新の発言（いちばん下）へ戻る
 function toBottomBtn(log) {
@@ -1045,9 +1058,9 @@ function renderChat() {
     if (ui.tab === k) ui.seen[k] = latest;
     unread[k] = latest > ui.seen[k];
   }
-  $('#chatTabs').innerHTML = [...CHAT_TABS, ['memo', 'メモ']].map(([k, t]) => `<button class="${ui.tab === k ? 'on' : ''}" data-act="ctab" data-tab="${k}">${t}${unread[k] ? '<i class="dot"></i>' : ''}</button>`).join('');
+  $('#chatTabs').innerHTML = [...CHAT_TABS, ['log', '記録'], ['memo', 'メモ']].map(([k, t]) => `<button class="${ui.tab === k ? 'on' : ''}" data-act="ctab" data-tab="${k}">${t}${unread[k] ? '<i class="dot"></i>' : ''}</button>`).join('');
   const memo = ui.tab === 'memo', log = $('#chatLog');
-  log.hidden = memo; $('#chatForm').hidden = memo; $('#memoPane').hidden = !memo;
+  log.hidden = memo; $('#chatForm').hidden = memo || ui.tab === 'log'; $('#memoPane').hidden = !memo; // 記録タブは読むだけ
   for (const [id, k] of [['#memoPub', 'pub'], ['#memoGm', 'gm']]) if (document.activeElement !== $(id)) $(id).value = state.memo[k];
   const opts = (el, items) => { const v = el.value; el.innerHTML = items.map(([val, t]) => `<option value="${esc(val)}">${esc(t)}</option>`).join(''); if (items.some(i => i[0] === v)) el.value = v; };
   const names = state.chars.map(c => [c.name, c.name]);
@@ -1079,8 +1092,8 @@ async function sendChat() {
     toPlayer({ type: 'dice', anim: { text: publicMask()(anim.text), cls: anim.cls, rands: anim.rands, lock: true } });
     await new Promise(res => setTimeout(res, DICE_MS + 300));
   }
-  pushMsg(tab, from, text, extra);
-  if (tab === 'chat') talkNotice(`${from} が雑談に書き込みました`); // GMが雑談に書いたときも、プレイヤー画面とスマホに知らせる
+  if (!anim) clearDice(); // ふつうの発言が入ったら、前のダイスの表示は片付ける
+  pushMsg(tab, from, text, tab === 'chat' && !anim ? { ...extra, mw: true } : extra); // 雑談に直接入力した発言だけ、メッセージウィンドウに流す
   commit();
 }
 // 雑談への書き込みを、プレイヤー画面（別ウィンドウ）とスマホに知らせる。except = 書いた本人のスマホ
@@ -1162,7 +1175,7 @@ function playDice(a) {
   el.className = 'dicefx show' + (IS_PLAYER && fx.lock ? ' locked' : '');
   diceSound();
 
-  const n = dice.length, s = Math.min(IS_PHONE ? 30 : IS_PLAYER ? 52 : 34, lay.aw * 0.9 / (n * 2.5)); // s = ダイスの半径(px)
+  const n = dice.length, s = Math.max(6, Math.min(IS_PHONE ? 30 : IS_PLAYER ? 52 : 34, lay.aw * 0.9 / (n * 2.5))); // s = ダイスの半径(px)。盤面が隠れていて幅が取れないときも、描画が失敗しない大きさにする
   const w = lay.aw, h = s * 6.4, ground = s * 5, dpr = window.devicePixelRatio || 1;
   const cv = $('canvas', el), ctx = cv.getContext('2d');
   cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
@@ -1208,6 +1221,13 @@ function hideDice(tell) {
   $('#diceFx').className = 'dicefx';
   fx.waiters.splice(0).forEach(go => go()); // 閉じられるのを待っている処理（成長判定の続き）を進める
   if (tell) { if (IS_PLAYER) toGM({ type: 'diceOff' }); else toPlayer({ type: 'diceOff' }); }
+}
+// 場面が動いたとき（発言・シーン切り替え・手番の移動）に、出たままのダイスを全員の画面から片付ける。
+// 成長判定の途中（クリック待ち）は、勝手に先へ進まないよう片付けない
+function clearDice() {
+  if (IS_PLAYER || fx.waiters.length || !$('#diceFx').classList.contains('show')) return;
+  hideDice(false);
+  toPlayer({ type: 'diceOff' });
 }
 function bindDice() {
   const el = $('#diceFx');
@@ -1463,15 +1483,24 @@ async function doRoll(expr) {
   const r = await rollAny(expr);
   if (!r) return toast('ダイス式を読み取れませんでした（例: 2d6+3）');
   r.text = `${who}：${r.text}`; // 例: 探索者1：1D100 ＞ 24
-  playDice({ ...r, lock: true }); // ダイス欄で振った分はGM画面だけ。チャットに送るとプレイヤー画面でも転がる
+  r.secret = !!ui.diceSecret; // 「非公開」に切り替えているときだけ、GM画面にしか出さない
   ui.dice.unshift(r);
   ui.dice.length = Math.min(ui.dice.length, 20);
   renderDice();
+  playDice({ ...r, lock: true });
+  if (r.secret) return;
+  // 公開：全員の画面でダイスを転がし、止まってからチャットに残す（メインか雑談を開いていればそこへ、それ以外はメインへ）
+  const tab = ui.tab === 'chat' ? 'chat' : 'main';
+  toPlayer({ type: 'dice', anim: { text: publicMask()(r.text), cls: r.cls, rands: r.rands, lock: true } });
+  await new Promise(res => setTimeout(res, DICE_MS + 300));
+  pushMsg(tab, who, r.text);
+  commit();
 }
 function renderDice() {
   $('#diceLog').innerHTML = ui.dice.map((r, i) => `<div class="dres ${r.cls}"><span class="dtxt">${esc(r.text)}</span>
-    <button class="btn sm" data-act="copyDice" data-i="${i}">コピー</button><button class="btn sm" data-act="pasteDice" data-i="${i}" title="チャットの入力欄に貼り付けます">チャットへ</button></div>`).join('')
-    || '<div class="hint">ボタンを押すとここに結果が出ます（押しただけではプレイヤー画面に出ません）</div>';
+    ${r.secret ? '<span class="tag secret">非公開</span>' : ''}<button class="btn sm" data-act="copyDice" data-i="${i}">コピー</button>${r.secret
+      ? `<button class="btn sm" data-act="pasteDice" data-i="${i}" title="チャットの入力欄に貼り付けます（送信すると全員に公開されます）">チャットへ</button>` : ''}</div>`).join('')
+    || '<div class="hint">振った結果は全員に公開され、チャットにも残ります。「公開」ボタンを押して「非公開」にすると、GM画面にだけ出ます。</div>';
 }
 function copyText(text) {
   const fallback = () => {
@@ -1650,6 +1679,7 @@ const snapshot = () => clone({
   bgm: { id: state.bgm.playing ? state.bgm.id : null, volume: state.bgm.volume, loop: state.bgm.loop },
 });
 function applyScene(sc) {
+  clearDice();
   const s = clone(sc);
   state.fg = s.fg; state.bg = s.bg; state.markers = s.markers;
   const same = state.bgm.playing && state.bgm.id === s.bgm.id;
@@ -1698,6 +1728,7 @@ function loadState(s) {
   const d = defaultState();
   state = { ...d, ...s };
   for (const k of ['fg', 'bg', 'bgm', 'memo', 'turn', 'view']) state[k] = { ...d[k], ...(s[k] || {}) };
+  for (const m of state.chat) if (m.sys && m.tab === 'info') { m.tab = 'log'; m.gm = true; } // 以前は情報タブに入っていた自動の記録を、記録タブへ移す
   for (const c of state.chars) if (!c.kind) c.kind = c.sheet ? 'pc' : 'npc'; // 種類の区別がなかった頃のコマ：シート付きをプレイヤーとみなす
   state.bgm.playing = false; // ブラウザは操作なしの自動再生を許さないため
 }
@@ -1814,10 +1845,14 @@ function sheetHTML(sh, opt = {}) {
 
     <h2>能力値</h2>
     <div class="sh-stats">${sh.stats.map(([k, v]) => `<div class="sh-stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
-    <div class="sh-derived">${sh.derived.map(([k, v]) => `<div data-dk="${esc(k)}"${['幸運', 'アイデア', '知識'].includes(k) ? tap(k, v) : ''}><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
+    <div class="sh-derived">${sh.derived.map(([k, v]) => {
+      // SANは、いまの値（コマのステータスで減った値）で表示して、その値で振る。opt.san がなければシートの値
+      const val = k === 'SAN' && Number.isFinite(opt.san) ? opt.san : v;
+      return `<div data-dk="${esc(k)}"${['SAN', '幸運', 'アイデア', '知識'].includes(k) ? tap(k === 'SAN' ? 'SAN（正気度ロール）' : k, val) : ''}><span>${esc(k)}</span><b>${esc(val)}</b></div>`;
+    }).join('')}</div>
 
     <h2>技能</h2>
-    ${opt.roll ? '<p class="sh-legend" style="margin:0 0 8px">技能や「幸運・アイデア・知識」を押すと、その値でダイスを振れます。</p>' : ''}
+    ${opt.roll ? '<p class="sh-legend" style="margin:0 0 8px">技能や「SAN・幸運・アイデア・知識」を押すと、その値でダイスを振れます。SANはいまの値で振ります。</p>' : ''}
     ${opt.edit === 'gm' ? '<p class="sh-legend" style="margin:0 0 8px">技能の現在値は、数字を書き換えると変更できます。</p>' : ''}
     <label class="chk sheet-toggle"><input type="checkbox" data-sheet-all${opt.all ? ' checked' : ''}> 初期値のままの技能も表示する</label>
     ${groups.map(([g, list]) => `<h3 class="sh-group">${esc(g)}技能</h3>
@@ -2040,9 +2075,75 @@ function stepTurn(dir) {
     if (i < 0) { if (round <= 1) return toast('これより前の手番はありません'); i = n - 1; round--; }
     if (!all[i].hidden) break;
   }
+  clearDice();
   state.turn = { id: all[i].id, round };
   sysMsg(`ラウンド${round}：${all[i].name} の手番${dir < 0 ? '（戻しました）' : ''}`);
   commit();
+}
+
+/* ---------- Claudeへの相談（いまの状況とチャットをまとめてコピーする） ---------- */
+// claude.ai のチャットへ外から書き込む方法はないので、貼り付け用の文章を作ってコピーする。
+// 2回目からは「前回コピーした後の分」だけにできるので、同じチャットで相談を続けやすい
+const TAB_NAMES = { main: 'メイン', info: '情報', chat: '雑談', secret: '秘話', log: '記録' };
+const consultOpt = { status: true, memo: true, range: 'new', tabs: { main: true, info: true, chat: true, secret: true, log: false }, q: '' };
+function consultChat(o = consultOpt) {
+  const list = state.chat.filter(m => o.tabs[m.tab]);
+  if (o.range === 'new') return list.filter(m => m.t > (state.shareT || 0));
+  if (o.range === 'all') return list.slice(-300);
+  return list.slice(-(+o.range.slice(1) || 20));
+}
+function consultText(o = consultOpt) {
+  const s = state, out = ['【セッションボードからの状況共有】'];
+  if (o.status) {
+    const scene = s.scenes.find(x => x.id === s.sceneId), turn = s.chars.find(c => c.id === s.turn.id);
+    out.push(`ルーム：${s.room}${scene ? `　シーン：${scene.name}` : ''}　ラウンド：${s.turn.round}　手番：${turn ? turn.name : 'なし'}`, '', '■コマ');
+    for (const c of order()) {
+      const flags = [isPC(c) ? 'PL' : 'NPC', c.hidden ? '秘匿' : '', c.secretName ? '名前非公開' : '', c.secretStatus ? 'ステータス非公開' : ''].filter(Boolean).join('・');
+      const st = c.status.filter(x => x.label).map(x => `${x.label} ${x.value}${x.max !== '' && x.max != null ? '/' + x.max : ''}`).join(' ');
+      out.push(`- ${c.name}（${flags}）${st}　行動順 ${c.init}${c.memo ? `\n  メモ：${c.memo.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`);
+    }
+    if (!s.chars.length) out.push('（コマなし）');
+  }
+  if (o.memo && (s.memo.gm || s.memo.pub)) {
+    if (s.memo.gm) out.push('', '■GMメモ（秘匿）', s.memo.gm.trim());
+    if (s.memo.pub) out.push('', '■公開メモ', s.memo.pub.trim());
+  }
+  const chat = consultChat(o);
+  const label = o.range === 'new' ? '前回の共有以降' : o.range === 'all' ? 'すべて' : `直近${o.range.slice(1)}件`;
+  out.push('', `■チャット（${label}・${chat.length}件）`);
+  for (const m of chat) out.push(`[${TAB_NAMES[m.tab] || m.tab}] ${m.from}${m.to ? '→' + m.to : ''}：${m.text.replace(/\n/g, '\n　')}`);
+  if (!chat.length) out.push('（新しい発言はありません）');
+  if (o.q.trim()) out.push('', '■相談したいこと', o.q.trim());
+  return out.join('\n');
+}
+function consultDlgHTML() {
+  const o = consultOpt, n = consultChat({ ...o, range: 'new' }).length;
+  return `${dlgHead('Claudeに相談（状況をコピー）')}
+    <div class="dlg-body" id="consultForm">
+      <div class="hint">いまの状況とチャットをまとめた文章を作ります。コピーして、相談しているClaudeのチャットに貼り付けてください。<b>秘匿の情報も含まれます。</b>プレイヤーに見える場所には貼らないでください。</div>
+      <div class="row wrap"><label class="chk"><input type="checkbox" id="cStatus"${o.status ? ' checked' : ''}> シーン・手番・コマの状態</label>
+        <label class="chk"><input type="checkbox" id="cMemo"${o.memo ? ' checked' : ''}> メモ（GMメモ・公開メモ）</label></div>
+      <div class="field"><span>チャット</span><select id="cRange">
+        ${[['new', `前回コピーした後の分（${n}件）`], ['n20', '直近20件'], ['n50', '直近50件'], ['all', 'すべて（最大300件）']].map(([v, t]) => `<option value="${v}"${o.range === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="row wrap">${Object.entries(TAB_NAMES).map(([k, t]) => `<label class="chk"><input type="checkbox" data-ctab="${k}"${o.tabs[k] ? ' checked' : ''}> ${t}</label>`).join('')}</div>
+      <label class="f">相談したいこと（任意）<textarea id="cQ" rows="2" placeholder="例：探索者が屋敷に入るのをためらっています。自然に背中を押す展開の案をください。">${esc(o.q)}</textarea></label>
+      <label class="f">コピーされる内容<textarea id="cPreview" rows="11" readonly>${esc(consultText())}</textarea></label>
+      <label class="f">相談先のチャットのURL（任意。入れておくと「チャットを開く」で開けます）
+        <input type="url" data-bind="claudeUrl" value="${esc(state.claudeUrl || '')}" placeholder="https://claude.ai/chat/…"></label>
+      <div class="row"><button class="btn primary" data-act="consultCopy">コピー</button><button class="btn" data-act="consultOpen">チャットを開く</button>
+        <span class="spacer"></span><button class="btn" data-act="closeDlg">閉じる</button></div>
+    </div>`;
+}
+// 相談の画面で選び直したら、コピーされる内容を作り直す（画面は作り直さない：入力中のカーソルを保つ）
+function consultUpdate() {
+  const f = $('#consultForm');
+  if (!f) return;
+  consultOpt.status = $('#cStatus', f).checked;
+  consultOpt.memo = $('#cMemo', f).checked;
+  consultOpt.range = $('#cRange', f).value;
+  $$('[data-ctab]', f).forEach(el => { consultOpt.tabs[el.dataset.ctab] = el.checked; });
+  consultOpt.q = $('#cQ', f).value;
+  $('#cPreview', f).value = consultText();
 }
 
 /* ---------- 操作 ---------- */
@@ -2056,10 +2157,15 @@ const byId = (list, el) => list.find(x => x.id === el.dataset.id);
 
 const A = {
   ltab(el) { ui.ltab = el.dataset.tab; commit(); },
-  ctab(el) { ui.tab = el.dataset.tab; if (ui.tab !== 'secret' && ui.tab !== 'memo') state.view.ptab = ui.tab; commit(); },
+  ctab(el) { ui.tab = el.dataset.tab; if (!['secret', 'memo', 'log'].includes(ui.tab)) state.view.ptab = ui.tab; commit(); },
   set(el) { const w = walk(el.dataset.path); if (w) { w[0][w[1]] = el.dataset.val; commit(); } },
   toggle(el) { const w = walk(el.dataset.path); if (w) { w[0][w[1]] = !w[0][w[1]]; commit(); } },
   closeDlg() { closeMainDlg(); },
+  toggleDiceSecret(el) { // ダイスの公開／非公開（コマ一覧の公開／秘匿と同じ見た目の切り替え）
+    ui.diceSecret = !ui.diceSecret;
+    el.textContent = ui.diceSecret ? '非公開' : '公開';
+    el.classList.toggle('on', !ui.diceSecret);
+  },
   toggleSort() { ui.sortInit = !ui.sortInit; commit(); },
   moveChar(el) { // コマ一覧の並び順を入れ替える
     const i = state.chars.findIndex(c => c.id === el.dataset.id), j = i + +el.dataset.d;
@@ -2082,6 +2188,19 @@ const A = {
     stopPhoneHost();
     state = defaultState();
     commit();
+  },
+
+  // Claudeへの相談
+  consult() { openDlg(consultDlgHTML, 'wide'); },
+  consultCopy() {
+    copyText($('#cPreview').value);
+    state.shareT = Date.now(); // 次からは「前回コピーした後の分」だけにできる
+    save();
+  },
+  consultOpen() {
+    const url = (state.claudeUrl || '').trim();
+    if (!/^https:\/\/claude\.ai\//.test(url)) return toast('相談先のチャットのURL（https://claude.ai/… で始まるもの）を入れてください');
+    window.open(url, '_blank', 'noopener');
   },
 
   // スマホ
@@ -2229,7 +2348,7 @@ const A = {
   },
   copyDice(el) { copyText(ui.dice[+el.dataset.i].text); },
   pasteDice(el) {
-    if (ui.tab === 'memo') { ui.tab = state.view.ptab; renderChat(); }
+    if (ui.tab === 'memo' || ui.tab === 'log') { ui.tab = state.view.ptab; renderChat(); }
     const box = $('#chatText');
     box.value = (box.value ? box.value + '\n' : '') + ui.dice[+el.dataset.i].text;
     box.focus();
@@ -2244,6 +2363,8 @@ function bindEvents() {
   for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) { if (d.id === 'dlg') closeMainDlg(); else d.close(); } });
   $('#dlg').addEventListener('cancel', e => { e.preventDefault(); closeMainDlg(); }); // Esc でも、保存していないシートの変更は確認する
   $('#dlg').addEventListener('close', () => commit());
+  $('#dlg').addEventListener('input', consultUpdate);
+  $('#dlg').addEventListener('change', consultUpdate);
   // スマホ画面のプレビューは見出しをドラッグして動かせる
   $('#ppHead').addEventListener('pointerdown', e => {
     if (e.target.closest('button')) return;
@@ -2298,7 +2419,7 @@ function bindEvents() {
   $('#chatLog').addEventListener('scroll', () => {
     cancelAnimationFrame(scrollSent);
     scrollSent = requestAnimationFrame(() => {
-      if (ui.tab === 'secret' || ui.tab === 'memo') return;
+      if (['secret', 'memo', 'log'].includes(ui.tab)) return;
       const log = $('#chatLog'), top = log.getBoundingClientRect().top;
       const bottom = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
       // いちばん上に見えている発言のうち、プレイヤーにも見えるもの（GMのみの記録は飛ばす）
@@ -2363,7 +2484,7 @@ function initPlayer() {
 }
 
 /* ---------- スマホ画面（プレイヤーが自分のスマホで見る。見るだけ） ---------- */
-const ph = { view: { zoom: 1, panX: 0, panY: 0 }, tab: 'map', chat: 'main', name: '', ready: false, seen: { chat: 0, secret: 0 }, status: '接続中…', ok: false, peer: null, retry: 0 };
+const ph = { view: { zoom: 1, panX: 0, panY: 0 }, tab: 'map', chat: 'main', name: '', ready: false, seen: { main: 0, info: 0, chat: 0, secret: 0 }, status: '接続中…', ok: false, peer: null, retry: 0 };
 const PH_TABS = [['map', 'マップ'], ['chars', 'コマ'], ['chat', 'チャット'], ['memo', 'メモ'], ['sheet', 'シート']];
 function renderPhone() {
   const s = state, whispers = s.whispers || [];
@@ -2391,7 +2512,10 @@ function renderPhone() {
   sel.value = ph.name;
 
   // まだ見ていない発言があるタブに印を付ける
-  const count = { chat: s.chat.length ? s.chat[s.chat.length - 1].t : 0, secret: whispers.length ? whispers[whispers.length - 1].t : 0 };
+  // タブごとの、いちばん新しい発言の時刻（未読の印に使う）
+  const newestIn = tab => s.chat.reduce((t, m) => m.tab === tab ? Math.max(t, m.t) : t, 0);
+  const count = { main: newestIn('main'), info: newestIn('info'), chat: newestIn('chat'), secret: whispers.length ? whispers[whispers.length - 1].t : 0 };
+
   // 自分宛ての秘話が新しく届いたら、画面の中央にも知らせる
   const toMe = whispers.filter(m => m.to === ph.name), newest = toMe.length ? toMe[toMe.length - 1] : null;
   if (newest && newest.t > (ph.whisperT || 0)) {
@@ -2400,9 +2524,10 @@ function renderPhone() {
     if (s.now && s.now - newest.t < 10000) centerNotice(`${newest.from} から秘話が届きました`); // 秘話を開いている最中でも出す
   }
   // 秘話はチャットの中のタブ。見ているほう（秘話か、それ以外）を既読にする
+  // 開いて見ているタブ（メイン・情報・雑談・秘話のどれか）だけを既読にする。ほかに未読があれば赤い印を付ける
   const inSecret = ph.chat === 'secret';
-  if (ph.tab === 'chat') ph.seen[inSecret ? 'secret' : 'chat'] = count[inSecret ? 'secret' : 'chat'];
-  const newSecret = count.secret > ph.seen.secret, unread = newSecret || count.chat > ph.seen.chat;
+  if (ph.tab === 'chat') ph.seen[ph.chat] = count[ph.chat];
+  const fresh = k => count[k] > ph.seen[k], newSecret = fresh('secret'), unread = ['main', 'info', 'chat', 'secret'].some(fresh);
   setHTML($('#phTabs'), PH_TABS.map(([k, t]) => `<button class="${ph.tab === k ? 'on' : ''}" data-ptab="${k}">${t}${k === 'chat' && unread ? '<i class="dot"></i>' : ''}</button>`).join(''));
 
   const map = ph.tab === 'map', body = $('#phBody');
@@ -2423,13 +2548,13 @@ function renderPhone() {
     html = s.chars.length ? `<div class="ph-sub">ラウンド ${s.turn.round}</div>${initListHTML()}` : '<div class="empty">コマがありません</div>';
   } else if (ph.tab === 'chat') {
     const list = s.chat.filter(m => m.tab === ph.chat);
-    html = `<nav class="tabs ph-chat-tabs">${CHAT_TABS.map(([k, t]) => `<button class="${ph.chat === k ? 'on' : ''}" data-pchat="${k}">${t}${k === 'secret' && newSecret ? '<i class="dot"></i>' : ''}</button>`).join('')}</nav>
+    html = `<nav class="tabs ph-chat-tabs">${CHAT_TABS.map(([k, t]) => `<button class="${ph.chat === k ? 'on' : ''}" data-pchat="${k}">${t}${fresh(k) ? '<i class="dot"></i>' : ''}</button>`).join('')}</nav>
       <div class="chat-log">${inSecret ? (!ph.name ? '<div class="empty">上の「あなた」で自分のコマを選ぶと、あなた宛ての秘話がここに表示され、GMへ秘話を送れます</div>'
         : whispers.map(m => msgHTML(m, false)).join('') || '<div class="empty">あなた宛ての秘話はまだありません</div>')
         : !s.view.chat ? '<div class="empty">いまはチャットが非表示になっています</div>' : list.map(m => msgHTML(m, false)).join('') || '<div class="empty">まだ発言がありません</div>'}</div>`;
   } else if (ph.tab === 'sheet') {
     html = !ph.name ? '<div class="empty">上の「あなた」で自分のコマを選ぶと、探索者シートがここに表示されます</div>'
-      : s.sheet ? sheetHTML(s.sheet, { all: ph.sheetAll, roll: true, edit: 'pl' }) : '<div class="empty">このコマには探索者シートが登録されていません</div>';
+      : s.sheet ? sheetHTML(s.sheet, { all: ph.sheetAll, roll: true, edit: 'pl', san: num(((s.myStatus || []).find(x => x.label === 'SAN') || {}).value, NaN) }) : '<div class="empty">このコマには探索者シートが登録されていません</div>';
   } else {
     html = s.memo.pub ? `<div class="pmemo">${esc(s.memo.pub)}</div>` : '<div class="empty">公開メモはありません</div>';
   }
@@ -2438,6 +2563,7 @@ function renderPhone() {
     const log = $('.chat-log', body);
     if (log) { log.scrollTop = log.scrollHeight; toBottomBtn(log); }
   }
+
 }
 function initPhone() {
   document.body.classList.add('phone');

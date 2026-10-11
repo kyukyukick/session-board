@@ -521,3 +521,16 @@ body.phone #notice.show, body.phone #notice:popover-open { font-size: 18px; padd
 @media (prefers-reduced-motion: reduce) { #notice { animation: none; } }
 body.player:not(.phone) #notice.show, body.player:not(.phone) #notice:popover-open { font-size: 30px; padding: 26px 44px; } /* 外部モニターでは大きく */
 #notice.talk { background: #fff; color: #1f2328; } /* 雑談の知らせ */
+
+/* ダイス欄：非公開のチェックと印 */
+.dice-head .chk { flex: none; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dres .tag { margin: 0; flex: none; }
+.dice-head label:not(.chk) { white-space: nowrap; }
+.dice-head { flex-wrap: wrap; row-gap: 4px; }
+.dice-head b { white-space: nowrap; }
+.dice-head select { min-width: 90px; }
+
+/* 雑談に書き込みがあったとき、メッセージウィンドウを点滅させる */
+.msgwin.flash { animation: mwFlash .5s ease-in-out 3; }
+@keyframes mwFlash { 50% { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); } } /* 枠だけを光らせる（中は変えない） */
+@media (prefers-reduced-motion: reduce) { .msgwin.flash { animation: none; } }
